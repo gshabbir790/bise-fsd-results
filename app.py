@@ -3,6 +3,7 @@ import uuid
 import zipfile
 import threading
 import time
+import logging
 
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
@@ -10,6 +11,8 @@ from playwright.sync_api import sync_playwright
 
 app = Flask(__name__)
 CORS(app)
+
+logging.basicConfig(level=logging.INFO)
 
 JOBS = {}
 JOBS_DIR = "/tmp/bise_jobs"
@@ -23,14 +26,20 @@ def check_website():
     if request.method == "GET":
         return jsonify({"message": "API is working. Please use POST request with a 'url' JSON body."})
 
-    data = request.get_json(force=True)
+    data = request.get_json(force=True) or {}
     url = data.get("url")
 
     if not url:
         return jsonify({"error": "url is required"}), 400
 
     has_session = False
-    browser = None  # Finally block کے لیے متغیر
+    debug_info = {
+        "url": url,
+        "has_session": False,
+        "selects_found": 0,
+        "iframes_found": 0,
+        "html_snippet": ""
+    }
     
     try:
         with sync_playwright() as p:
@@ -38,6 +47,7 @@ def check_website():
                 headless=True,
                 args=[
                     "--no-sandbox",
+                    "--disable-setuid-sandbox",
                     "--disable-dev-shm-usage"
                 ]
             )
@@ -58,48 +68,77 @@ def check_website():
 
             # HTML کا حصہ پرنٹ کرنا
             html = page.content()
+            debug_info["html_snippet"] = html[:1000]
             print("HTML Length:", len(html))
             print("HTML Snippet (first 3000 chars):\n", html[:3000])
             
             # Screenshot لینا (Railway پر /tmp فولڈر استعمال کرنا بہتر ہے)
-            page.screenshot(path="/tmp/debug.png", full_page=True)
-            print("Screenshot saved at /tmp/debug.png")
+            try:
+                page.screenshot(path="/tmp/debug.png", full_page=True)
+                print("Screenshot saved at /tmp/debug.png")
+            except Exception as se:
+                print(f"Screenshot error: {se}")
 
             # تمام جدید Locators کی گنتی
-            print("Select count (Main Page):", page.locator("select").count())
+            selects = page.locator("select").all()
+            debug_info["selects_found"] = len(selects)
+            print("Select count (Main Page):", len(selects))
+            
+            for i, sel in enumerate(selects):
+                name_attr = sel.get_attribute("name") or ""
+                id_attr = sel.get_attribute("id") or ""
+                print(f"Select {i}: id={id_attr}, name={name_attr}")
+                if "session" in name_attr.lower() or "session" in id_attr.lower() or "year" in name_attr.lower():
+                    has_session = True
+
             print("Input count:", page.locator("input").count())
             print("Button count:", page.locator("button").count())
             print("Form count:", page.locator("form").count())
             print("Combobox count:", page.locator("[role='combobox']").count())
             print("Select2 count:", page.locator(".select2").count())
             print("Bootstrap Select count:", page.locator(".bootstrap-select").count())
-            print("Iframe count:", page.locator("iframe").count())
-
+            
             frames = page.frames
+            debug_info["iframes_found"] = len(frames)
             print("Total Frames (including main):", len(frames))
 
             for i, frame in enumerate(frames):
-                print(f"Frame [{i}] URL: {frame.url}")
-                # فریم کے اندر سلیکٹس چیک کرنا
-                frame_selects = frame.query_selector_all("select")
-                for s in frame_selects:
-                    options = s.query_selector_all("option")
-                    if len(options) > 1:
-                        has_session = True
+                if frame != page.main_frame:
+                    print(f"Frame [{i}] URL: {frame.url}")
+                    try:
+                        frame_selects = frame.locator("select").all()
+                        print(f"Frame selects count: {len(frame_selects)}")
+                        if len(frame_selects) > 0:
+                            debug_info["selects_found"] += len(frame_selects)
+                            for sel in frame_selects:
+                                name_attr = sel.get_attribute("name") or ""
+                                id_attr = sel.get_attribute("id") or ""
+                                if "session" in name_attr.lower() or "session" in id_attr.lower() or "year" in name_attr.lower():
+                                    has_session = True
+                    except Exception as fe:
+                        print(f"Error inspecting frame: {fe}")
 
+            debug_info["has_session"] = has_session
             print("Final has_session =", has_session)
             print("--- ADVANCED DEBUGGING END ---")
             
+        # Note: browser.close() والی لائن کو ہٹا دیا گیا ہے کیونکہ 'with' بلاک خود بخود بند کر دیتا ہے۔
+
+        return jsonify({
+            "success": True,
+            "has_session": has_session,
+            "debug": debug_info
+        })
+
     except Exception as e:
         import traceback
         traceback.print_exc()
         print(f"Check URL Error: {e}")
-    finally:
-        # Browser کو محفوظ طریقے سے بند کرنا
-        if browser:
-            browser.close()
-
-    return jsonify({"has_session": has_session})
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "debug": debug_info
+        }), 500
 
 # ---------------------------------------------------------
 # 2. Scrape & Download Logic (Background Thread)
@@ -115,6 +154,7 @@ def run_job(job_id, target_url, session, start_roll, end_roll):
                 headless=True,
                 args=[
                     "--no-sandbox",
+                    "--disable-setuid-sandbox",
                     "--disable-dev-shm-usage"
                 ]
             )
@@ -202,7 +242,7 @@ def run_job(job_id, target_url, session, start_roll, end_roll):
                 finally:
                     job["processed"] += 1
 
-            browser.close()
+            # 'with' بلاک خود بخود براؤزر بند کر دے گا
 
         zip_path = os.path.join(JOBS_DIR, f"{job_id}.zip")
         with zipfile.ZipFile(zip_path, "w") as zf:
@@ -221,11 +261,14 @@ def run_job(job_id, target_url, session, start_roll, end_roll):
 # ---------------------------------------------------------
 @app.route("/api/job", methods=["POST"])
 def start_job():
-    data = request.get_json(force=True)
+    data = request.get_json(force=True) or {}
     target_url = data.get("url")
     session = data.get("session", "")
-    start_roll = int(data.get("start_roll"))
-    end_roll = int(data.get("end_roll"))
+    try:
+        start_roll = int(data.get("start_roll", 0))
+        end_roll = int(data.get("end_roll", 0))
+    except ValueError:
+        return jsonify({"error": "invalid roll numbers"}), 400
 
     if not target_url or start_roll > end_roll:
         return jsonify({"error": "invalid input"}), 400
