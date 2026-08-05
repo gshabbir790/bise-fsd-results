@@ -9,11 +9,56 @@ from flask_cors import CORS
 from playwright.sync_api import sync_playwright
 
 app = Flask(__name__)
-CORS(app)  # frontend کو یہ backend استعمال کرنے کی اجازت دیتا ہے
+CORS(app)
 
-JOBS = {}  # job_id -> {status, total, processed, done, failed, zip_path}
+JOBS = {}
 JOBS_DIR = "/tmp/bise_jobs"
 os.makedirs(JOBS_DIR, exist_ok=True)
+
+
+@app.route("/api/check", methods=["POST"])
+def check_website():
+    data = request.get_json(force=True)
+    url = data.get("url")
+
+    if not url:
+        return jsonify({"error": "url is required"}), 400
+
+    has_session = False
+    try:
+        with sync_playwright() as p:
+            # Railway اور Linux کے لیے مستحکم براؤزر لانچ کنفیگریشن
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage"
+                ]
+            )
+            page = browser.new_page()
+            page.goto(url, wait_until="networkidle", timeout=30000)
+
+            for select in page.query_selector_all("select"):
+                sid = (select.get_attribute("id") or "").lower()
+                sname = (select.get_attribute("name") or "").lower()
+                text = (select.inner_text() or "").lower()
+
+                # "year" کو ہٹا کر صرف درست سیشن کی ورڈز رکھے گئے ہیں تاکہ false positive نہ ہو
+                if any(k in sid for k in ["session", "sess"]):
+                    has_session = True
+                    break
+                if any(k in sname for k in ["session", "sess"]):
+                    has_session = True
+                    break
+                if any(k in text for k in ["session", "annual", "supplementary", "1st annual", "2nd annual"]):
+                    has_session = True
+                    break
+
+            browser.close()
+    except Exception as e:
+        print(f"Check URL Error: {e}")
+
+    return jsonify({"has_session": has_session})
 
 
 def run_job(job_id, target_url, session, start_roll, end_roll):
@@ -23,32 +68,88 @@ def run_job(job_id, target_url, session, start_roll, end_roll):
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch()
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage"
+                ]
+            )
             page = browser.new_page()
 
             for roll_no in range(start_roll, end_roll + 1):
                 try:
-                    # اب یہ فرنٹ اینڈ سے موصول ہونے والا متحرک یو آر ایل استعمال کرے گا
                     page.goto(target_url, wait_until="networkidle", timeout=30000)
 
-                    # اگر سیشن موجود ہو تب ہی سلیکٹ کرنے کی کوشش کرے گا
+                    # سیشن سلیکٹ کرنے کا عمل
                     if session:
-                        try:
-                            page.select_option("select", label=session)
-                        except Exception:
-                            for dd in page.query_selector_all("select"):
+                        selected = False
+                        for select in page.query_selector_all("select"):
+                            try:
+                                select.select_option(label=session)
+                                selected = True
+                                break
+                            except Exception:
                                 try:
-                                    dd.select_option(label=session)
+                                    select.select_option(value=session)
+                                    selected = True
                                     break
                                 except Exception:
                                     continue
+                        if not selected:
+                            try:
+                                page.select_option("select", label=session)
+                            except Exception:
+                                pass
 
-                    roll_input = page.query_selector("input[type='text']")
+                    # رول نمبر ان پٹ فیلڈ تلاش کرنا (سنٹیکس ایرر درست کر دیا گیا ہے)
+                    roll_input = (
+                        page.query_selector("input[type='text']")
+                        or page.query_selector("input[name*='roll']")
+                        or page.query_selector("input[id*='roll']")
+                    )
+                    
                     if roll_input is None:
-                        raise Exception("Roll No field not found")
+                        inputs = page.query_selector_all("input")
+                        for inp in inputs:
+                            itype = (inp.get_attribute("type") or "").lower()
+                            if itype in ["", "text", "number"]:
+                                roll_input = inp
+                                break
+
+                    if roll_input is None:
+                        raise Exception("Roll No input field not found")
+
                     roll_input.fill(str(roll_no))
 
-                    page.click("text=Get Result")
+                    # یونیورسل بٹن کلک کرنے کا طریقہ (Locator استعمال کرتے ہوئے)
+                    clicked = False
+                    button_selectors = [
+                        "text=Get Result",
+                        "text=Search",
+                        "text=Submit",
+                        "text=View Result",
+                        "text=Show Result",
+                        "text=Find Result",
+                        "text=Search Result",
+                        "button[type='submit']",
+                        "input[type='submit']"
+                    ]
+
+                    for selector in button_selectors:
+                        loc = page.locator(selector)
+                        if loc.count() > 0:
+                            loc.first.click()
+                            clicked = True
+                            break
+
+                    if not clicked:
+                        btn = page.query_selector("button") or page.query_selector("input[type='button']")
+                        if btn:
+                            btn.click()
+                        else:
+                            raise Exception("Submit button not found")
+
                     page.wait_for_load_state("networkidle", timeout=30000)
                     page.wait_for_timeout(1500)
 
@@ -63,7 +164,6 @@ def run_job(job_id, target_url, session, start_roll, end_roll):
 
             browser.close()
 
-        # تمام پی ڈی ایف فائلز کو زپ (ZIP) کرنا
         zip_path = os.path.join(JOBS_DIR, f"{job_id}.zip")
         with zipfile.ZipFile(zip_path, "w") as zf:
             for fname in os.listdir(out_dir):
@@ -80,8 +180,8 @@ def run_job(job_id, target_url, session, start_roll, end_roll):
 @app.route("/api/job", methods=["POST"])
 def start_job():
     data = request.get_json(force=True)
-    target_url = data.get("url")  # فرنٹ اینڈ سے یو آر ایل حاصل کیا جا رہا ہے
-    session = data.get("session", "")  # سیشن اختیاری ہو سکتا ہے
+    target_url = data.get("url")
+    session = data.get("session", "")
     start_roll = int(data.get("start_roll"))
     end_roll = int(data.get("end_roll"))
 
@@ -132,7 +232,7 @@ def download(job_id):
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "message": "BISE FSD backend is running"})
+    return jsonify({"status": "ok", "message": "Universal BISE Result Downloader backend is running"})
 
 
 if __name__ == "__main__":
