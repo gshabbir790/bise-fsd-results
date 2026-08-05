@@ -9,16 +9,14 @@ from flask_cors import CORS
 from playwright.sync_api import sync_playwright
 
 app = Flask(__name__)
-CORS(app)  # frontend (Firebase) کو یہ backend استعمال کرنے کی اجازت دیتا ہے
+CORS(app)  # frontend کو یہ backend استعمال کرنے کی اجازت دیتا ہے
 
-JOBS = {}  # job_id -> {status, total, done, failed, zip_path}
+JOBS = {}  # job_id -> {status, total, processed, done, failed, zip_path}
 JOBS_DIR = "/tmp/bise_jobs"
 os.makedirs(JOBS_DIR, exist_ok=True)
 
-URL = "https://www.bisefsd.edu.pk/InterResults.aspx"
 
-
-def run_job(job_id, session, start_roll, end_roll):
+def run_job(job_id, target_url, session, start_roll, end_roll):
     job = JOBS[job_id]
     out_dir = os.path.join(JOBS_DIR, job_id)
     os.makedirs(out_dir, exist_ok=True)
@@ -30,17 +28,20 @@ def run_job(job_id, session, start_roll, end_roll):
 
             for roll_no in range(start_roll, end_roll + 1):
                 try:
-                    page.goto(URL, wait_until="networkidle", timeout=30000)
+                    # اب یہ فرنٹ اینڈ سے موصول ہونے والا متحرک یو آر ایل استعمال کرے گا
+                    page.goto(target_url, wait_until="networkidle", timeout=30000)
 
-                    try:
-                        page.select_option("select", label=session)
-                    except Exception:
-                        for dd in page.query_selector_all("select"):
-                            try:
-                                dd.select_option(label=session)
-                                break
-                            except Exception:
-                                continue
+                    # اگر سیشن موجود ہو تب ہی سلیکٹ کرنے کی کوشش کرے گا
+                    if session:
+                        try:
+                            page.select_option("select", label=session)
+                        except Exception:
+                            for dd in page.query_selector_all("select"):
+                                try:
+                                    dd.select_option(label=session)
+                                    break
+                                except Exception:
+                                    continue
 
                     roll_input = page.query_selector("input[type='text']")
                     if roll_input is None:
@@ -62,7 +63,7 @@ def run_job(job_id, session, start_roll, end_roll):
 
             browser.close()
 
-        # zip everything
+        # تمام پی ڈی ایف فائلز کو زپ (ZIP) کرنا
         zip_path = os.path.join(JOBS_DIR, f"{job_id}.zip")
         with zipfile.ZipFile(zip_path, "w") as zf:
             for fname in os.listdir(out_dir):
@@ -79,15 +80,16 @@ def run_job(job_id, session, start_roll, end_roll):
 @app.route("/api/job", methods=["POST"])
 def start_job():
     data = request.get_json(force=True)
-    session = data.get("session")
+    target_url = data.get("url")  # فرنٹ اینڈ سے یو آر ایل حاصل کیا جا رہا ہے
+    session = data.get("session", "")  # سیشن اختیاری ہو سکتا ہے
     start_roll = int(data.get("start_roll"))
     end_roll = int(data.get("end_roll"))
 
-    if not session or start_roll > end_roll:
+    if not target_url or start_roll > end_roll:
         return jsonify({"error": "invalid input"}), 400
 
     if (end_roll - start_roll + 1) > 300:
-        return jsonify({"error": "ایک بار میں 300 سے زیادہ روول نمبرز کی اجازت نہیں"}), 400
+        return jsonify({"error": "ایک بار میں 300 سے زیادہ رول نمبرز کی اجازت نہیں"}), 400
 
     job_id = str(uuid.uuid4())
     JOBS[job_id] = {
@@ -100,7 +102,7 @@ def start_job():
         "created": time.time(),
     }
 
-    t = threading.Thread(target=run_job, args=(job_id, session, start_roll, end_roll))
+    t = threading.Thread(target=run_job, args=(job_id, target_url, session, start_roll, end_roll))
     t.start()
 
     return jsonify({"job_id": job_id})
