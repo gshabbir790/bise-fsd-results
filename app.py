@@ -16,8 +16,13 @@ JOBS_DIR = "/tmp/bise_jobs"
 os.makedirs(JOBS_DIR, exist_ok=True)
 
 
-@app.route("/api/check", methods=["POST"])
+@app.route("/api/check", methods=["GET", "POST"])
 def check_website():
+    if request.method == "GET":
+        return jsonify({
+            "message": "API is working. Please use POST request with a 'url' JSON body."
+        })
+
     data = request.get_json(force=True)
     url = data.get("url")
 
@@ -37,16 +42,14 @@ def check_website():
             page = browser.new_page()
             page.goto(url, wait_until="networkidle", timeout=30000)
 
-            # --- ڈیবাগنگ کا نیا حصہ (Railway Logs میں دیکھنے کے لیے) ---
+            # ڈیবাগنگ لاگز
             selects = page.query_selector_all("select")
             print("--- DEBUG: Total Selects found:", len(selects))
             for i, s in enumerate(selects):
                 print(
                     f"Select [{i}] -> id = {s.get_attribute('id')}, name = {s.get_attribute('name')}, text = {s.inner_text().strip()[:100]}"
                 )
-            # --------------------------------------------------------
 
-            # 1. پہلے موجودہ سلیکٹس کے id, name اور text چیک کریں
             for select in selects:
                 sid = (select.get_attribute("id") or "").lower()
                 sname = (select.get_attribute("name") or "").lower()
@@ -62,7 +65,6 @@ def check_website():
                     has_session = True
                     break
 
-            # 2. اگر اوپر سے نہ ملے تو آپ کے بتائے گئے زیادہ مضبوط طریقے (Locators / Content Check) آزمانا
             if not has_session:
                 has_session = page.locator("label:text-matches('session', 'i')").count() > 0
 
@@ -73,7 +75,7 @@ def check_website():
                 content = page.content().lower()
                 has_session = "exam session" in content or "session" in content
 
-            print("--- DEBUG: Final has_session result:", has_session)
+            print("Final has_session =", has_session)
 
             browser.close()
     except Exception as e:
@@ -256,4 +258,3 @@ def health():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
-            
