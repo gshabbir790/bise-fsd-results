@@ -15,13 +15,13 @@ JOBS = {}
 JOBS_DIR = "/tmp/bise_jobs"
 os.makedirs(JOBS_DIR, exist_ok=True)
 
-
+# ---------------------------------------------------------
+# 1. Check Website Route (Advanced Debugging Version)
+# ---------------------------------------------------------
 @app.route("/api/check", methods=["GET", "POST"])
 def check_website():
     if request.method == "GET":
-        return jsonify({
-            "message": "API is working. Please use POST request with a 'url' JSON body."
-        })
+        return jsonify({"message": "API is working. Please use POST request with a 'url' JSON body."})
 
     data = request.get_json(force=True)
     url = data.get("url")
@@ -30,6 +30,8 @@ def check_website():
         return jsonify({"error": "url is required"}), 400
 
     has_session = False
+    browser = None  # Finally block کے لیے متغیر
+    
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(
@@ -39,51 +41,69 @@ def check_website():
                     "--disable-dev-shm-usage"
                 ]
             )
-            page = browser.new_page()
-            page.goto(url, wait_until="networkidle", timeout=30000)
+            
+            # User-Agent اور Viewport شامل کر دیا گیا
+            page = browser.new_page(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+                viewport={"width": 1366, "height": 768}
+            )
+            
+            print("--- ADVANCED DEBUGGING START ---")
+            
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(8000)
 
-            # ڈیবাগنگ لاگز
-            selects = page.query_selector_all("select")
-            print("--- DEBUG: Total Selects found:", len(selects))
-            for i, s in enumerate(selects):
-                print(
-                    f"Select [{i}] -> id = {s.get_attribute('id')}, name = {s.get_attribute('name')}, text = {s.inner_text().strip()[:100]}"
-                )
+            print("Current URL:", page.url)
+            print("Title:", page.title())
 
-            for select in selects:
-                sid = (select.get_attribute("id") or "").lower()
-                sname = (select.get_attribute("name") or "").lower()
-                text = (select.inner_text() or "").lower()
+            # HTML کا حصہ پرنٹ کرنا
+            html = page.content()
+            print("HTML Length:", len(html))
+            print("HTML Snippet (first 3000 chars):\n", html[:3000])
+            
+            # Screenshot لینا (Railway پر /tmp فولڈر استعمال کرنا بہتر ہے)
+            page.screenshot(path="/tmp/debug.png", full_page=True)
+            print("Screenshot saved at /tmp/debug.png")
 
-                if any(k in sid for k in ["session", "sess", "exam"]):
-                    has_session = True
-                    break
-                if any(k in sname for k in ["session", "sess", "exam"]):
-                    has_session = True
-                    break
-                if any(k in text for k in ["session", "annual", "supplementary", "1st annual", "2nd annual", "exam"]):
-                    has_session = True
-                    break
+            # تمام جدید Locators کی گنتی
+            print("Select count (Main Page):", page.locator("select").count())
+            print("Input count:", page.locator("input").count())
+            print("Button count:", page.locator("button").count())
+            print("Form count:", page.locator("form").count())
+            print("Combobox count:", page.locator("[role='combobox']").count())
+            print("Select2 count:", page.locator(".select2").count())
+            print("Bootstrap Select count:", page.locator(".bootstrap-select").count())
+            print("Iframe count:", page.locator("iframe").count())
 
-            if not has_session:
-                has_session = page.locator("label:text-matches('session', 'i')").count() > 0
+            frames = page.frames
+            print("Total Frames (including main):", len(frames))
 
-            if not has_session:
-                has_session = page.locator("text=/Exam\\s*Session/i").count() > 0
-
-            if not has_session:
-                content = page.content().lower()
-                has_session = "exam session" in content or "session" in content
+            for i, frame in enumerate(frames):
+                print(f"Frame [{i}] URL: {frame.url}")
+                # فریم کے اندر سلیکٹس چیک کرنا
+                frame_selects = frame.query_selector_all("select")
+                for s in frame_selects:
+                    options = s.query_selector_all("option")
+                    if len(options) > 1:
+                        has_session = True
 
             print("Final has_session =", has_session)
-
-            browser.close()
+            print("--- ADVANCED DEBUGGING END ---")
+            
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"Check URL Error: {e}")
+    finally:
+        # Browser کو محفوظ طریقے سے بند کرنا
+        if browser:
+            browser.close()
 
     return jsonify({"has_session": has_session})
 
-
+# ---------------------------------------------------------
+# 2. Scrape & Download Logic (Background Thread)
+# ---------------------------------------------------------
 def run_job(job_id, target_url, session, start_roll, end_roll):
     job = JOBS[job_id]
     out_dir = os.path.join(JOBS_DIR, job_id)
@@ -196,7 +216,9 @@ def run_job(job_id, target_url, session, start_roll, end_roll):
         job["status"] = "error"
         job["error"] = str(e)
 
-
+# ---------------------------------------------------------
+# 3. Job Start Route
+# ---------------------------------------------------------
 @app.route("/api/job", methods=["POST"])
 def start_job():
     data = request.get_json(force=True)
@@ -227,7 +249,9 @@ def start_job():
 
     return jsonify({"job_id": job_id})
 
-
+# ---------------------------------------------------------
+# 4. Job Status Route
+# ---------------------------------------------------------
 @app.route("/api/status/<job_id>", methods=["GET"])
 def job_status(job_id):
     job = JOBS.get(job_id)
@@ -241,7 +265,9 @@ def job_status(job_id):
         "failed": job["failed"],
     })
 
-
+# ---------------------------------------------------------
+# 5. Zip Download Route
+# ---------------------------------------------------------
 @app.route("/api/download/<job_id>", methods=["GET"])
 def download(job_id):
     job = JOBS.get(job_id)
@@ -249,11 +275,12 @@ def download(job_id):
         return jsonify({"error": "not ready"}), 400
     return send_file(job["zip_path"], as_attachment=True, download_name=f"results_{job_id}.zip")
 
-
+# ---------------------------------------------------------
+# 6. Health Check / Root Route
+# ---------------------------------------------------------
 @app.route("/", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "message": "Universal BISE Result Downloader backend is running"})
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
