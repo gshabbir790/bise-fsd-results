@@ -27,7 +27,6 @@ def check_website():
     has_session = False
     try:
         with sync_playwright() as p:
-            # Railway اور Linux کے لیے مستحکم براؤزر لانچ کنفیگریشن
             browser = p.chromium.launch(
                 headless=True,
                 args=[
@@ -38,21 +37,43 @@ def check_website():
             page = browser.new_page()
             page.goto(url, wait_until="networkidle", timeout=30000)
 
-            for select in page.query_selector_all("select"):
+            # --- ڈیবাগنگ کا نیا حصہ (Railway Logs میں دیکھنے کے لیے) ---
+            selects = page.query_selector_all("select")
+            print("--- DEBUG: Total Selects found:", len(selects))
+            for i, s in enumerate(selects):
+                print(
+                    f"Select [{i}] -> id = {s.get_attribute('id')}, name = {s.get_attribute('name')}, text = {s.inner_text().strip()[:100]}"
+                )
+            # --------------------------------------------------------
+
+            # 1. پہلے موجودہ سلیکٹس کے id, name اور text چیک کریں
+            for select in selects:
                 sid = (select.get_attribute("id") or "").lower()
                 sname = (select.get_attribute("name") or "").lower()
                 text = (select.inner_text() or "").lower()
 
-                # "year" کو ہٹا کر صرف درست سیشن کی ورڈز رکھے گئے ہیں تاکہ false positive نہ ہو
-                if any(k in sid for k in ["session", "sess"]):
+                if any(k in sid for k in ["session", "sess", "exam"]):
                     has_session = True
                     break
-                if any(k in sname for k in ["session", "sess"]):
+                if any(k in sname for k in ["session", "sess", "exam"]):
                     has_session = True
                     break
-                if any(k in text for k in ["session", "annual", "supplementary", "1st annual", "2nd annual"]):
+                if any(k in text for k in ["session", "annual", "supplementary", "1st annual", "2nd annual", "exam"]):
                     has_session = True
                     break
+
+            # 2. اگر اوپر سے نہ ملے تو آپ کے بتائے گئے زیادہ مضبوط طریقے (Locators / Content Check) آزمانا
+            if not has_session:
+                has_session = page.locator("label:text-matches('session', 'i')").count() > 0
+
+            if not has_session:
+                has_session = page.locator("text=/Exam\\s*Session/i").count() > 0
+
+            if not has_session:
+                content = page.content().lower()
+                has_session = "exam session" in content or "session" in content
+
+            print("--- DEBUG: Final has_session result:", has_session)
 
             browser.close()
     except Exception as e:
@@ -81,7 +102,6 @@ def run_job(job_id, target_url, session, start_roll, end_roll):
                 try:
                     page.goto(target_url, wait_until="networkidle", timeout=30000)
 
-                    # سیشن سلیکٹ کرنے کا عمل
                     if session:
                         selected = False
                         for select in page.query_selector_all("select"):
@@ -102,7 +122,6 @@ def run_job(job_id, target_url, session, start_roll, end_roll):
                             except Exception:
                                 pass
 
-                    # رول نمبر ان پٹ فیلڈ تلاش کرنا (سنٹیکس ایرر درست کر دیا گیا ہے)
                     roll_input = (
                         page.query_selector("input[type='text']")
                         or page.query_selector("input[name*='roll']")
@@ -122,7 +141,6 @@ def run_job(job_id, target_url, session, start_roll, end_roll):
 
                     roll_input.fill(str(roll_no))
 
-                    # یونیورسل بٹن کلک کرنے کا طریقہ (Locator استعمال کرتے ہوئے)
                     clicked = False
                     button_selectors = [
                         "text=Get Result",
@@ -238,3 +256,4 @@ def health():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
+            
