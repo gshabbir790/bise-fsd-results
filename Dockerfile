@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# پلے رائٹ کے لیے ضروری سسٹم لائبریریاں انسٹال کرنا (libatspi0 کو libatspi2.0-0t64 سے بدل دیا گیا ہے)
+# پلے رائٹ کے لیے ضروری سسٹم لائبریریاں انسٹال کرنا
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -32,8 +32,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# پلے رائٹ اور اس کا کرومیم براؤزر انسٹال کرنا
-RUN playwright install --with-deps chromium
+# صرف براؤزر انسٹال کریں، ڈیپینڈینسز اوپر apt-get سے پوری ہو چکی ہیں
+RUN playwright install chromium
 
 COPY . .
 
