@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# پلے رائٹ کے لیے ضروری سسٹم لائبریریاں انسٹال کرنا
+# پلے رائٹ کے لیے ضروری سسٹم لائبریریاں انسٹال کرنا (libatspi0 کو libatspi2.0-0t64 سے بدل دیا گیا ہے)
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y \
     libpango-1.0-0 \
     libcairo2 \
     libasound2 \
-    libatspi0 \
+    libatspi2.0-0t64 \
     libx11-xcb1 \
     libxcomposite1 \
     libxdamage1 \
