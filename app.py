@@ -52,7 +52,6 @@ def check_website():
                 ]
             )
             
-            # User-Agent اور Viewport شامل کر دیا گیا
             page = browser.new_page(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
                 viewport={"width": 1366, "height": 768}
@@ -66,20 +65,17 @@ def check_website():
             print("Current URL:", page.url)
             print("Title:", page.title())
 
-            # HTML کا حصہ پرنٹ کرنا
             html = page.content()
             debug_info["html_snippet"] = html[:1000]
             print("HTML Length:", len(html))
             print("HTML Snippet (first 3000 chars):\n", html[:3000])
             
-            # Screenshot لینا (Railway پر /tmp فولڈر استعمال کرنا بہتر ہے)
             try:
                 page.screenshot(path="/tmp/debug.png", full_page=True)
                 print("Screenshot saved at /tmp/debug.png")
             except Exception as se:
                 print(f"Screenshot error: {se}")
 
-            # تمام جدید Locators کی گنتی
             selects = page.locator("select").all()
             debug_info["selects_found"] = len(selects)
             print("Select count (Main Page):", len(selects))
@@ -122,8 +118,6 @@ def check_website():
             print("Final has_session =", has_session)
             print("--- ADVANCED DEBUGGING END ---")
             
-        # Note: browser.close() والی لائن کو ہٹا دیا گیا ہے کیونکہ 'with' بلاک خود بخود بند کر دیتا ہے۔
-
         return jsonify({
             "success": True,
             "has_session": has_session,
@@ -143,7 +137,8 @@ def check_website():
 # ---------------------------------------------------------
 # 2. Scrape & Download Logic (Background Thread)
 # ---------------------------------------------------------
-def run_job(job_id, target_url, session, start_roll, end_roll):
+# تبدیلی: اب یہ start_roll, end_roll کی بجائے رول نمبرز کی پوری لسٹ (roll_list) لے گا
+def run_job(job_id, target_url, session, roll_list):
     job = JOBS[job_id]
     out_dir = os.path.join(JOBS_DIR, job_id)
     os.makedirs(out_dir, exist_ok=True)
@@ -152,15 +147,12 @@ def run_job(job_id, target_url, session, start_roll, end_roll):
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage"
-                ]
+                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
             )
             page = browser.new_page()
 
-            for roll_no in range(start_roll, end_roll + 1):
+            # تبدیلی: اب رینج کی بجائے دی گئی لسٹ میں سے ایک ایک رول نمبر چلے گا
+            for roll_no in roll_list:
                 try:
                     page.goto(target_url, wait_until="networkidle", timeout=30000)
 
@@ -205,15 +197,9 @@ def run_job(job_id, target_url, session, start_roll, end_roll):
 
                     clicked = False
                     button_selectors = [
-                        "text=Get Result",
-                        "text=Search",
-                        "text=Submit",
-                        "text=View Result",
-                        "text=Show Result",
-                        "text=Find Result",
-                        "text=Search Result",
-                        "button[type='submit']",
-                        "input[type='submit']"
+                        "text=Get Result", "text=Search", "text=Submit", "text=View Result",
+                        "text=Show Result", "text=Find Result", "text=Search Result",
+                        "button[type='submit']", "input[type='submit']"
                     ]
 
                     for selector in button_selectors:
@@ -242,8 +228,6 @@ def run_job(job_id, target_url, session, start_roll, end_roll):
                 finally:
                     job["processed"] += 1
 
-            # 'with' بلاک خود بخود براؤزر بند کر دے گا
-
         zip_path = os.path.join(JOBS_DIR, f"{job_id}.zip")
         with zipfile.ZipFile(zip_path, "w") as zf:
             for fname in os.listdir(out_dir):
@@ -256,6 +240,7 @@ def run_job(job_id, target_url, session, start_roll, end_roll):
         job["status"] = "error"
         job["error"] = str(e)
 
+
 # ---------------------------------------------------------
 # 3. Job Start Route
 # ---------------------------------------------------------
@@ -264,22 +249,41 @@ def start_job():
     data = request.get_json(force=True) or {}
     target_url = data.get("url")
     session = data.get("session", "")
-    try:
-        start_roll = int(data.get("start_roll", 0))
-        end_roll = int(data.get("end_roll", 0))
-    except ValueError:
-        return jsonify({"error": "invalid roll numbers"}), 400
+    
+    # نیا آپشن ریسیو کرنا
+    custom_rolls_raw = data.get("custom_rolls", [])
+    start_roll = data.get("start_roll", 0)
+    end_roll = data.get("end_roll", 0)
 
-    if not target_url or start_roll > end_roll:
-        return jsonify({"error": "invalid input"}), 400
+    roll_list = []
 
-    if (end_roll - start_roll + 1) > 300:
+    # اگر یوزر نے مخصوص رول نمبرز بھیجے ہیں
+    if custom_rolls_raw and len(custom_rolls_raw) > 0:
+        for r in custom_rolls_raw:
+            try:
+                roll_list.append(int(r))
+            except ValueError:
+                pass # غلط ان پٹ کو نظر انداز کر دیں
+    # بصورت دیگر نارمل رینج استعمال کریں
+    else:
+        try:
+            start_r = int(start_roll)
+            end_r = int(end_roll)
+            if start_r > 0 and end_r >= start_r:
+                roll_list = list(range(start_r, end_r + 1))
+        except ValueError:
+            pass
+
+    if not target_url or not roll_list:
+        return jsonify({"error": "invalid input یا رول نمبرز درست نہیں ہیں"}), 400
+
+    if len(roll_list) > 300:
         return jsonify({"error": "ایک بار میں 300 سے زیادہ رول نمبرز کی اجازت نہیں"}), 400
 
     job_id = str(uuid.uuid4())
     JOBS[job_id] = {
         "status": "running",
-        "total": end_roll - start_roll + 1,
+        "total": len(roll_list),
         "processed": 0,
         "done": 0,
         "failed": [],
@@ -287,7 +291,8 @@ def start_job():
         "created": time.time(),
     }
 
-    t = threading.Thread(target=run_job, args=(job_id, target_url, session, start_roll, end_roll))
+    # Thread میں roll_list بھیجی جا رہی ہے
+    t = threading.Thread(target=run_job, args=(job_id, target_url, session, roll_list))
     t.start()
 
     return jsonify({"job_id": job_id})
