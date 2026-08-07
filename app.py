@@ -16,13 +16,10 @@ JOBS = {}
 JOBS_DIR = "/tmp/bise_jobs"
 os.makedirs(JOBS_DIR, exist_ok=True)
 
-# ---------------------------------------------------------
-# 1. Check Website Route
-# ---------------------------------------------------------
 @app.route("/api/check", methods=["GET", "POST"])
 def check_website():
     if request.method == "GET":
-        return jsonify({"message": "API is working. Please use POST request with a 'url' JSON body."})
+        return jsonify({"message": "API is working."})
 
     data = request.get_json(force=True) or {}
     url = data.get("url")
@@ -31,85 +28,54 @@ def check_website():
         return jsonify({"error": "url is required"}), 400
 
     has_session = False
-    debug_info = {
-        "url": url,
-        "has_session": False,
-        "selects_found": 0,
-        "iframes_found": 0,
-        "html_snippet": ""
-    }
+    debug_info = {"url": url, "has_session": False, "selects_found": 0}
     
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
-        }
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.text, "html.parser")
 
-        debug_info["html_snippet"] = response.text[:1000]
         selects = soup.find_all("select")
         debug_info["selects_found"] = len(selects)
 
-        for sel in selects:
-            name_attr = sel.get("name", "")
-            id_attr = sel.get("id", "")
-            if "session" in name_attr.lower() or "session" in id_attr.lower() or "year" in name_attr.lower():
-                has_session = True
-
-        iframes = soup.find_all("iframe")
-        debug_info["iframes_found"] = len(iframes)
+        # Enhanced detection for ASP.NET & normal select tags
+        if len(selects) > 0:
+            has_session = True
 
         debug_info["has_session"] = has_session
-
-        return jsonify({
-            "success": True,
-            "has_session": has_session,
-            "debug": debug_info
-        })
+        return jsonify({"success": True, "has_session": has_session, "debug": debug_info})
 
     except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e),
-            "debug": debug_info
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
-# ---------------------------------------------------------
-# 2. Synchronous Scrape & Download Logic for Serverless
-# ---------------------------------------------------------
+
 @app.route("/api/job", methods=["POST"])
 def start_job():
     data = request.get_json(force=True) or {}
     target_url = data.get("url")
-    session = data.get("session", "")
+    session_val = data.get("session", "")
     
     custom_rolls_raw = data.get("custom_rolls", [])
     start_roll = data.get("start_roll", 0)
     end_roll = data.get("end_roll", 0)
 
     roll_list = []
-
-    if custom_rolls_raw and len(custom_rolls_raw) > 0:
+    if custom_rolls_raw:
         for r in custom_rolls_raw:
-            try:
-                roll_list.append(int(r))
-            except ValueError:
-                pass
+            try: roll_list.append(int(r))
+            except ValueError: pass
     else:
         try:
-            start_r = int(start_roll)
-            end_r = int(end_roll)
+            start_r, end_r = int(start_roll), int(end_roll)
             if start_r > 0 and end_r >= start_r:
                 roll_list = list(range(start_r, end_r + 1))
-        except ValueError:
-            pass
+        except ValueError: pass
 
     if not target_url or not roll_list:
-        return jsonify({"error": "invalid input یا رول نمبرز درست نہیں ہیں"}), 400
+        return jsonify({"error": "غلط ان پٹ یا رول نمبرز"}), 400
 
-    # Serverless execution limit constraint
-    if len(roll_list) > 10:
-        return jsonify({"error": "Vercel فری سرور پر ایک وقت میں صرف 10 رول نمبر پروسیس ہو سکتے ہیں۔"}), 400
+    if len(roll_list) > 15:
+        return jsonify({"error": "Vercel پر ایک وقت میں 15 سے زیادہ رول نمبر ممکن نہیں"}), 400
 
     job_id = str(uuid.uuid4())
     out_dir = os.path.join(JOBS_DIR, job_id)
@@ -118,24 +84,45 @@ def start_job():
     done = 0
     failed = []
     
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
-    }
-
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     session_req = requests.Session()
 
     for roll_no in roll_list:
         try:
-            payload = {
-                "rollno": str(roll_no),
-                "session": session
-            }
-            res = session_req.post(target_url, data=payload, headers=headers, timeout=10)
+            # Step 1: GET Request to extract ASP.NET ViewState
+            init_res = session_req.get(target_url, headers=headers, timeout=10)
+            soup = BeautifulSoup(init_res.text, "html.parser")
+
+            payload = {}
+            # Extract all hidden inputs (ASP.NET requires these)
+            for hidden in soup.find_all("input", type="hidden"):
+                if hidden.get("name"):
+                    payload[hidden["name"]] = hidden.get("value", "")
+
+            # Step 2: Map Roll No Field
+            roll_input = soup.find("input", {"type": "text"}) or soup.find("input", id=lambda x: x and "roll" in x.lower())
+            roll_field_name = roll_input.get("name") if roll_input else "txtRollNo"
+            payload[roll_field_name] = str(roll_no)
+
+            # Step 3: Map Session Select Field if applicable
+            select_tag = soup.find("select")
+            if select_tag and session_val:
+                select_name = select_tag.get("name", "ddlExam")
+                payload[select_name] = session_val
+
+            # Step 4: Map Submit Button Name
+            submit_btn = soup.find("input", type="submit") or soup.find("button", type="submit")
+            if submit_btn and submit_btn.get("name"):
+                payload[submit_btn["name"]] = submit_btn.get("value", "Get Result")
+
+            # Step 5: Submit Form
+            res = session_req.post(target_url, data=payload, headers=headers, timeout=12)
             
             file_path = os.path.join(out_dir, f"{roll_no}.html")
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(res.text)
             done += 1
+
         except Exception as e:
             failed.append({"roll_no": roll_no, "error": str(e)})
 
@@ -155,40 +142,22 @@ def start_job():
 
     return jsonify({"job_id": job_id, "status": "done"})
 
-# ---------------------------------------------------------
-# 3. Job Status Route
-# ---------------------------------------------------------
 @app.route("/api/status/<job_id>", methods=["GET"])
 def job_status(job_id):
     job = JOBS.get(job_id)
-    if not job:
-        return jsonify({"error": "job not found"}), 404
-    return jsonify({
-        "status": job["status"],
-        "total": job["total"],
-        "processed": job["processed"],
-        "done": job["done"],
-        "failed": job["failed"],
-    })
+    if not job: return jsonify({"error": "job not found"}), 404
+    return jsonify(job)
 
-# ---------------------------------------------------------
-# 4. Zip Download Route
-# ---------------------------------------------------------
 @app.route("/api/download/<job_id>", methods=["GET"])
 def download(job_id):
     job = JOBS.get(job_id)
-    if not job or job["status"] != "done":
-        return jsonify({"error": "not ready"}), 400
+    if not job or job["status"] != "done": return jsonify({"error": "not ready"}), 400
     return send_file(job["zip_path"], as_attachment=True, download_name=f"results_{job_id}.zip")
 
-# ---------------------------------------------------------
-# 5. Health Check
-# ---------------------------------------------------------
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "message": "Universal BISE Result Downloader backend is running on Vercel"})
+    return jsonify({"status": "ok", "message": "Backend running"})
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
     
