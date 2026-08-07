@@ -19,35 +19,28 @@ os.makedirs(JOBS_DIR, exist_ok=True)
 @app.route("/api/check", methods=["GET", "POST"])
 def check_website():
     if request.method == "GET":
-        return jsonify({"message": "API is working."})
+        return jsonify({"message": "API working"})
 
     data = request.get_json(force=True) or {}
-    url = data.get("url")
-
+    url = data.get("url", "")
     if not url:
-        return jsonify({"error": "url is required"}), 400
+        return jsonify({"error": "URL required"}), 400
 
-    has_session = False
-    debug_info = {"url": url, "has_session": False, "selects_found": 0}
-    
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        response = requests.get(url, headers=headers, timeout=15)
-        soup = BeautifulSoup(response.text, "html.parser")
-
+        res = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(res.text, "html.parser")
+        
         selects = soup.find_all("select")
-        debug_info["selects_found"] = len(selects)
+        has_session = len(selects) > 0
 
-        # Enhanced detection for ASP.NET & normal select tags
-        if len(selects) > 0:
-            has_session = True
-
-        debug_info["has_session"] = has_session
-        return jsonify({"success": True, "has_session": has_session, "debug": debug_info})
-
+        return jsonify({
+            "success": True,
+            "has_session": has_session,
+            "debug": {"selects_found": len(selects)}
+        })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
-
 
 @app.route("/api/job", methods=["POST"])
 def start_job():
@@ -55,74 +48,61 @@ def start_job():
     target_url = data.get("url")
     session_val = data.get("session", "")
     
-    custom_rolls_raw = data.get("custom_rolls", [])
+    custom_rolls = data.get("custom_rolls", [])
     start_roll = data.get("start_roll", 0)
     end_roll = data.get("end_roll", 0)
 
     roll_list = []
-    if custom_rolls_raw:
-        for r in custom_rolls_raw:
-            try: roll_list.append(int(r))
-            except ValueError: pass
-    else:
-        try:
-            start_r, end_r = int(start_roll), int(end_roll)
-            if start_r > 0 and end_r >= start_r:
-                roll_list = list(range(start_r, end_r + 1))
-        except ValueError: pass
+    if custom_rolls:
+        roll_list = [int(r) for r in custom_rolls if str(r).isdigit()]
+    elif start_roll and end_roll:
+        roll_list = list(range(int(start_roll), int(end_roll) + 1))
 
     if not target_url or not roll_list:
-        return jsonify({"error": "غلط ان پٹ یا رول نمبرز"}), 400
-
-    if len(roll_list) > 15:
-        return jsonify({"error": "Vercel پر ایک وقت میں 15 سے زیادہ رول نمبر ممکن نہیں"}), 400
+        return jsonify({"error": "براہِ کرم درست رول نمبرز فراہم کریں"}), 400
 
     job_id = str(uuid.uuid4())
     out_dir = os.path.join(JOBS_DIR, job_id)
     os.makedirs(out_dir, exist_ok=True)
 
-    done = 0
-    failed = []
-    
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    session_req = requests.Session()
+    sess = requests.Session()
+
+    done, failed = 0, []
 
     for roll_no in roll_list:
         try:
-            # Step 1: GET Request to extract ASP.NET ViewState
-            init_res = session_req.get(target_url, headers=headers, timeout=10)
+            # 1. First GET request to capture ViewState
+            init_res = sess.get(target_url, headers=headers, timeout=10)
             soup = BeautifulSoup(init_res.text, "html.parser")
 
             payload = {}
-            # Extract all hidden inputs (ASP.NET requires these)
-            for hidden in soup.find_all("input", type="hidden"):
-                if hidden.get("name"):
-                    payload[hidden["name"]] = hidden.get("value", "")
+            for h in soup.find_all("input", type="hidden"):
+                if h.get("name"):
+                    payload[h["name"]] = h.get("value", "")
 
-            # Step 2: Map Roll No Field
+            # 2. Map input fields
             roll_input = soup.find("input", {"type": "text"}) or soup.find("input", id=lambda x: x and "roll" in x.lower())
-            roll_field_name = roll_input.get("name") if roll_input else "txtRollNo"
-            payload[roll_field_name] = str(roll_no)
+            if roll_input and roll_input.get("name"):
+                payload[roll_input["name"]] = str(roll_no)
 
-            # Step 3: Map Session Select Field if applicable
             select_tag = soup.find("select")
-            if select_tag and session_val:
-                select_name = select_tag.get("name", "ddlExam")
-                payload[select_name] = session_val
+            if select_tag and select_tag.get("name") and session_val:
+                payload[select_tag["name"]] = session_val
 
-            # Step 4: Map Submit Button Name
             submit_btn = soup.find("input", type="submit") or soup.find("button", type="submit")
             if submit_btn and submit_btn.get("name"):
-                payload[submit_btn["name"]] = submit_btn.get("value", "Get Result")
+                payload[submit_btn["name"]] = submit_btn.get("value", "Search")
 
-            # Step 5: Submit Form
-            res = session_req.post(target_url, data=payload, headers=headers, timeout=12)
-            
+            # 3. POST submission
+            res = sess.post(target_url, data=payload, headers=headers, timeout=12)
+
+            # Save clean HTML result
             file_path = os.path.join(out_dir, f"{roll_no}.html")
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(res.text)
-            done += 1
 
+            done += 1
         except Exception as e:
             failed.append({"roll_no": roll_no, "error": str(e)})
 
@@ -142,21 +122,16 @@ def start_job():
 
     return jsonify({"job_id": job_id, "status": "done"})
 
-@app.route("/api/status/<job_id>", methods=["GET"])
-def job_status(job_id):
-    job = JOBS.get(job_id)
-    if not job: return jsonify({"error": "job not found"}), 404
-    return jsonify(job)
-
 @app.route("/api/download/<job_id>", methods=["GET"])
 def download(job_id):
     job = JOBS.get(job_id)
-    if not job or job["status"] != "done": return jsonify({"error": "not ready"}), 400
+    if not job or job["status"] != "done":
+        return jsonify({"error": "فائل تیار نہیں ہے"}), 400
     return send_file(job["zip_path"], as_attachment=True, download_name=f"results_{job_id}.zip")
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "message": "Backend running"})
+    return jsonify({"status": "ok", "message": "Backend is running on Vercel"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
