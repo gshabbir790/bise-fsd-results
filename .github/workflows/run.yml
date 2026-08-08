@@ -21,8 +21,9 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: Install Playwright browsers
-      run: playwright install --with-deps
+    - name: Install Playwright Browser (Chromium only)
+      run: playwright install chromium
 
     - name: Run main script
       run: python app.py
+      
