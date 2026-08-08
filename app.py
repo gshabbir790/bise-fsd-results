@@ -33,7 +33,6 @@ def check_website():
 
     try:
         with sync_playwright() as p:
-            # Railway کے لیے ضروری Arguments کے ساتھ Browser لانچ کیا گیا ہے
             browser = p.chromium.launch(
                 headless=True, 
                 args=[
@@ -49,7 +48,6 @@ def check_website():
             
             page.goto(target_url, timeout=60000, wait_until='networkidle')
             
-            # سیشن یا ایگزام کا ڈراپ ڈاؤن ڈھونڈنا
             session_select = page.query_selector('select[name*="session" i], select[name*="exam" i], select[id*="session" i], select[id*="exam" i], select[name*="ddl" i]')
             
             sessions_list = []
@@ -58,7 +56,6 @@ def check_website():
                 for opt in options:
                     text = opt.inner_text().strip()
                     val = opt.get_attribute('value') or text
-                    # خالی یا ڈیفالٹ اپشنز کو فلٹر کرنا
                     if text and not any(k in text.lower() for k in ['select', 'choose', 'پوچھیں', '--']):
                         sessions_list.append({'label': text, 'value': val})
 
@@ -90,7 +87,6 @@ def run_job(job_id, target_url, session, roll_list):
             )
             page = browser.new_page()
 
-            # رینج کی بجائے دی گئی لسٹ میں سے ایک ایک رول نمبر چلے گا
             for roll_no in roll_list:
                 try:
                     page.goto(target_url, wait_until="networkidle", timeout=30000)
@@ -189,21 +185,18 @@ def start_job():
     target_url = data.get("url")
     session = data.get("session", "")
     
-    # نیا آپشن ریسیو کرنا
     custom_rolls_raw = data.get("custom_rolls", [])
     start_roll = data.get("start_roll", 0)
     end_roll = data.get("end_roll", 0)
 
     roll_list = []
 
-    # اگر یوزر نے مخصوص رول نمبرز بھیجے ہیں
     if custom_rolls_raw and len(custom_rolls_raw) > 0:
         for r in custom_rolls_raw:
             try:
                 roll_list.append(int(r))
             except ValueError:
-                pass  # غلط ان پٹ کو نظر انداز کر دیں
-    # بصورت دیگر نارمل رینج استعمال کریں
+                pass 
     else:
         try:
             start_r = int(start_roll)
@@ -230,7 +223,6 @@ def start_job():
         "created": time.time(),
     }
 
-    # Thread میں roll_list بھیجی جا رہی ہے
     t = threading.Thread(target=run_job, args=(job_id, target_url, session, roll_list))
     t.start()
 
@@ -273,3 +265,4 @@ def health():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
+
