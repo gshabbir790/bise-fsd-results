@@ -13,12 +13,19 @@ on:
         required: true
         type: choice
         options:
-          - 'None (No session required)'
-          - 'Annual 2026'
+          - 'None (No session required)
           - 'Supplementary 2026'
-          - 'Annual 2025'
+          - 'Annual 2026'
           - 'Supplementary 2025'
+          - 'Annual 2025'
+          - 'Supplementary 2024'
           - 'Annual 2024'
+          - 'Supplementary 2023'
+          - 'Annual 2023'
+          - 'Supplementary 2022'
+          - 'Annual 2022'
+          - 'Supplementary 2021'
+          - 'Annual 2021'
       start_roll:
         description: 'Start Roll Number'
         required: true
