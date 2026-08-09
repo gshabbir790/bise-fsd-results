@@ -9,7 +9,7 @@ st.title("🎓 BISE Result Downloader")
 st.write("براؤزر بیسڈ تیز ترین رزلٹ ڈاؤن لوڈنگ اور پی ڈی ایف مرجر ٹول")
 
 # یوزر انٹرفیس (خوبصورت فارم)
-target_url = st.text_input("Board Result URL", placeholder="https://bisefgd.edu.pk/result...")
+target_url = st.text_input("Board Result URL", placeholder="https://www.bisefsd.edu.pk/InterResults.aspx")
 
 session_val = st.selectbox(
     "Select Session / Exam",
