@@ -64,4 +64,13 @@ jobs:
       with:
         name: downloaded-results
         path: /tmp/bise_results/
+              merge_pdfs:
+        description: 'Merge all PDFs into a single file?'
+        required: true
+        type: choice
+        default: 'Yes (Merge into one file)'
+        options:
+          - 'Yes (Merge into one file)'
+          - 'No (Keep separate only)'
+          
         
