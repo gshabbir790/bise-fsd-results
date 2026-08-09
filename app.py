@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
-from pypdf import PdfMerger
+from pypdf import PdfWriter
 
 logging.basicConfig(level=logging.INFO)
 
@@ -151,7 +151,7 @@ def download_and_convert_results():
         # مرحلہ 3: اگر یوزر نے مرج کا کہا ہے تو تمام پی ڈی ایف کو ایک فائل میں جوڑ دیں
         if "Yes" in merge_choice and successful_pdfs:
             logging.info("Step 3: Merging all PDFs into a single master file...")
-            merger = PdfMerger()
+            merger = PdfWriter()
             for pdf in successful_pdfs:
                 merger.append(pdf)
             
