@@ -26,61 +26,182 @@ def index():
     return render_template('index.html')
 
 # ---------------------------------------------------------
-# 1. Check Website Route (Auto-Fetch Sessions Version)
+# 1. Check Website Route (Advanced Auto-Fetch Sessions)
 # ---------------------------------------------------------
 @app.route("/api/check", methods=["GET", "POST"])
 def check_website():
     if request.method == "GET":
-        return jsonify({"message": "API is working. Please use POST request with a 'url' JSON body."})
-        
-    data = request.get_json(force=True) or {}
-    target_url = data.get("url")
-    
-    if not target_url:
-        return jsonify({'error': 'URL is required'}), 400
+        return jsonify({
+            "message": "API is working. Use POST with JSON: {'url': '...'}"
+        })
 
     try:
+        data = request.get_json(silent=True) or {}
+        url = data.get("url")
+
+        if not url:
+            return jsonify({
+                "error": "url is required"
+            }), 400
+
+        has_session = False
+
+        print("\n========== CHECK START ==========")
+        print("Target URL:", url)
+
         with sync_playwright() as p:
-            # Railway کے لیے ضروری Arguments کے ساتھ Browser لانچ کیا گیا ہے
+
             browser = p.chromium.launch(
-                headless=True, 
+                headless=True,
                 args=[
-                    "--no-sandbox", 
-                    "--disable-setuid-sandbox", 
-                    "--disable-dev-shm-usage"
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu"
                 ]
             )
-            page = browser.new_page(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-                viewport={"width": 1366, "height": 768}
-            )
-            
-            page.goto(target_url, timeout=60000, wait_until='networkidle')
-            
-            # سیشن یا ایگزام کا ڈراپ ڈاؤن ڈھونڈنا
-            session_select = page.query_selector('select[name*="session" i], select[name*="exam" i], select[id*="session" i], select[id*="exam" i], select[name*="ddl" i]')
-            
-            sessions_list = []
-            if session_select:
-                options = session_select.query_selector_all('option')
-                for opt in options:
-                    text = opt.inner_text().strip()
-                    val = opt.get_attribute('value') or text
-                    # خالی یا ڈیفالٹ اپشنز کو فلٹر کرنا
-                    if text and not any(k in text.lower() for k in ['select', 'choose', 'پوچھیں', '--']):
-                        sessions_list.append({'label': text, 'value': val})
 
-            browser.close()
-            
-            return jsonify({
-                'success': True,
-                'has_session': len(sessions_list) > 0,
-                'sessions': sessions_list
-            })
-            
+            page = browser.new_page(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/138.0.0.0 Safari/537.36"
+                ),
+                viewport={
+                    "width": 1366,
+                    "height": 768
+                }
+            )
+
+            print("Browser launched")
+
+            page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=60000
+            )
+
+            print("Page loaded")
+            print("Current URL:", page.url)
+            print("Title:", page.title())
+
+            # JavaScript / AJAX کو مکمل ہونے کا وقت
+            page.wait_for_timeout(8000)
+
+            print("After 8 seconds")
+
+            # -------------------------------------------------
+            # MAIN PAGE SELECTORS
+            # -------------------------------------------------
+            selects = page.locator("select")
+            select_count = selects.count()
+
+            print("Main select count:", select_count)
+
+            for i in range(select_count):
+                select = selects.nth(i)
+
+                sid = (select.get_attribute("id") or "").lower()
+                sname = (select.get_attribute("name") or "").lower()
+
+                try:
+                    text = (select.inner_text() or "").lower()
+                except Exception:
+                    text = ""
+
+                options = select.locator("option")
+                option_count = options.count()
+
+                print(
+                    f"SELECT [{i}] "
+                    f"id={sid} "
+                    f"name={sname} "
+                    f"options={option_count} "
+                    f"text={text[:100]}"
+                )
+
+                # Strong name/id detection
+                keywords = ["session", "sess", "exam", "year", "result"]
+
+                if any(k in sid for k in keywords):
+                    has_session = True
+
+                if any(k in sname for k in keywords):
+                    has_session = True
+
+                # Text based detection
+                text_keywords = [
+                    "session", "annual", "supplementary", 
+                    "exam", "2024", "2025", "2026"
+                ]
+
+                if any(k in text for k in text_keywords):
+                    has_session = True
+
+                # Multiple options can indicate a selectable session
+                if option_count > 1:
+                    print(f"Possible dropdown detected: SELECT [{i}]")
+
+            # -------------------------------------------------
+            # FRAMES CHECK
+            # -------------------------------------------------
+            print("Total frames:", len(page.frames))
+
+            for frame_index, frame in enumerate(page.frames):
+                print(f"FRAME [{frame_index}] URL: {frame.url}")
+
+                try:
+                    frame_selects = frame.locator("select")
+                    frame_select_count = frame_selects.count()
+
+                    print(f"Frame [{frame_index}] selects:", frame_select_count)
+
+                    for i in range(frame_select_count):
+                        select = frame_selects.nth(i)
+                        sid = (select.get_attribute("id") or "").lower()
+                        sname = (select.get_attribute("name") or "").lower()
+                        option_count = select.locator("option").count()
+
+                        print(
+                            f"  FRAME SELECT [{i}] "
+                            f"id={sid} "
+                            f"name={sname} "
+                            f"options={option_count}"
+                        )
+
+                        if option_count > 1:
+                            has_session = True
+
+                        if (
+                            "session" in sid or "session" in sname
+                            or "year" in sid or "year" in sname
+                            or "exam" in sid or "exam" in sname
+                        ):
+                            has_session = True
+
+                except Exception as frame_error:
+                    print(f"Frame [{frame_index}] error:", repr(frame_error))
+
+            print("FINAL has_session:", has_session)
+            print("========== CHECK END ==========\n")
+
+            # IMPORTANT: No browser.close() here. 
+            # with sync_playwright() will auto-cleanup.
+
+        return jsonify({
+            "has_session": has_session,
+            "url": url
+        })
+
     except Exception as e:
+        print("\n========== CHECK ERROR ==========")
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        print("ERROR:", repr(e))
+        print("========== CHECK ERROR END ==========\n")
+
+        return jsonify({
+            "has_session": False,
+            "error": str(e)
+        }), 500
 
 # ---------------------------------------------------------
 # 2. Scrape & Download Logic (Background Thread)
@@ -98,7 +219,6 @@ def run_job(job_id, target_url, session, roll_list):
             )
             page = browser.new_page()
 
-            # رینج کی بجائے دی گئی لسٹ میں سے ایک ایک رول نمبر چلے گا
             for roll_no in roll_list:
                 try:
                     page.goto(target_url, wait_until="networkidle", timeout=30000)
@@ -197,21 +317,18 @@ def start_job():
     target_url = data.get("url")
     session = data.get("session", "")
     
-    # نیا آپشن ریسیو کرنا
     custom_rolls_raw = data.get("custom_rolls", [])
     start_roll = data.get("start_roll", 0)
     end_roll = data.get("end_roll", 0)
 
     roll_list = []
 
-    # اگر یوزر نے مخصوص رول نمبرز بھیجے ہیں
     if custom_rolls_raw and len(custom_rolls_raw) > 0:
         for r in custom_rolls_raw:
             try:
                 roll_list.append(int(r))
             except ValueError:
-                pass  # غلط ان پٹ کو نظر انداز کر دیں
-    # بصورت دیگر نارمل رینج استعمال کریں
+                pass 
     else:
         try:
             start_r = int(start_roll)
@@ -238,7 +355,6 @@ def start_job():
         "created": time.time(),
     }
 
-    # Thread میں roll_list بھیجی جا رہی ہے
     t = threading.Thread(target=run_job, args=(job_id, target_url, session, roll_list))
     t.start()
 
