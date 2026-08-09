@@ -13,7 +13,7 @@ on:
         required: true
         type: choice
         options:
-          - 'None (No session required)
+          - 'None'
           - 'Supplementary 2026'
           - 'Annual 2026'
           - 'Supplementary 2025'
@@ -36,6 +36,14 @@ on:
         required: true
         default: ''
         type: string
+      merge_pdfs:
+        description: 'Merge all PDFs into a single file?'
+        required: true
+        type: choice
+        default: 'Yes (Merge into one file)'
+        options:
+          - 'Yes (Merge into one file)'
+          - 'No (Keep separate only)'
 
 jobs:
   run-script:
@@ -64,6 +72,7 @@ jobs:
         SESSION: ${{ github.event.inputs.session }}
         START_ROLL: ${{ github.event.inputs.start_roll }}
         END_ROLL: ${{ github.event.inputs.end_roll }}
+        MERGE_PDFS: ${{ github.event.inputs.merge_pdfs }}
       run: python app.py
 
     - name: Upload Results Folder
@@ -71,13 +80,3 @@ jobs:
       with:
         name: downloaded-results
         path: /tmp/bise_results/
-              merge_pdfs:
-        description: 'Merge all PDFs into a single file?'
-        required: true
-        type: choice
-        default: 'Yes (Merge into one file)'
-        options:
-          - 'Yes (Merge into one file)'
-          - 'No (Keep separate only)'
-          
-        
