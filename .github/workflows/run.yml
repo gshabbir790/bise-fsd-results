@@ -2,6 +2,27 @@ name: Run Result Downloader
 
 on:
   workflow_dispatch:
+    inputs:
+      target_url:
+        description: 'Board Result URL'
+        required: true
+        default: 'https://www.bisefgd.edu.pk/result'
+        type: string
+      session:
+        description: 'Session / Exam (e.g. Annual 2026)'
+        required: false
+        default: 'Annual 2026'
+        type: string
+      start_roll:
+        description: 'Start Roll Number'
+        required: true
+        default: '100001'
+        type: string
+      end_roll:
+        description: 'End Roll Number'
+        required: true
+        default: '100005'
+        type: string
 
 jobs:
   run-script:
@@ -24,6 +45,16 @@ jobs:
     - name: Install Playwright Browser (Chromium only)
       run: playwright install chromium
 
-    - name: Run main script
+    - name: Run main script with inputs
+      env:
+        TARGET_URL: ${{ github.event.inputs.target_url }}
+        SESSION: ${{ github.event.inputs.session }}
+        START_ROLL: ${{ github.event.inputs.start_roll }}
+        END_ROLL: ${{ github.event.inputs.end_roll }}
       run: python app.py
-      
+
+    - name: Upload Results Folder
+      uses: actions/upload-artifact@v4
+      with:
+        name: downloaded-results
+        path: /tmp/bise_results/
