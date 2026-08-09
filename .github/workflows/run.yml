@@ -10,7 +10,7 @@ on:
       SESSION:
         description: 'Select Session / Exam'
         required: true
-        default: 'Second Annual 2025'
+        default: 'Annual 2025'
       START_ROLL:
         description: 'Start Roll Number'
         required: true
