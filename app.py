@@ -27,7 +27,7 @@ def download_and_convert_results():
 
     successful_pdfs = []
 
-    logging.info(f"Starting lightning-fast Playwright download for {len(roll_list)} roll numbers...")
+    logging.info(f"Starting optimized Playwright download for {len(roll_list)} roll numbers...")
 
     try:
         with sync_playwright() as p:
@@ -44,7 +44,7 @@ def download_and_convert_results():
             # ویب سائٹ کو صرف ایک بار کھولیں
             page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
 
-            # اگر سیشن موجود ہو تو اسے ایک بار سلیکٹ کر لیں
+            # اگر سیشن موجود ہو تو اسے سلیکٹ کر لیں
             if session_val:
                 for select in page.query_selector_all("select"):
                     try:
@@ -59,6 +59,14 @@ def download_and_convert_results():
 
             for roll_no in roll_list:
                 try:
+                    # اگر پاپ اپ یا موڈل کھلا ہے تو اسے ہٹانے یا کلک کرنے کی کوشش کریں
+                    try:
+                        close_btn = page.query_selector(".modal .close, button.close, [data-dismiss='modal']")
+                        if close_btn:
+                            close_btn.click()
+                    except:
+                        pass
+
                     # رول نمبر ان پٹ فیلڈ تلاش کریں
                     roll_input = (
                         page.query_selector("input[id*='roll']") or
@@ -73,7 +81,7 @@ def download_and_convert_results():
                     roll_input.fill("")
                     roll_input.fill(str(roll_no))
 
-                    # سرچ بٹن پر کلک کریں
+                    # سرچ بٹن پر فورس کلک (force=True سے موڈل کا مسئلہ ختم ہو جائے گا)
                     button_selectors = [
                         "input[type='submit']", "button[type='submit']",
                         "text=Search", "text=Get Result", "text=Submit", "text=View Result"
@@ -83,7 +91,8 @@ def download_and_convert_results():
                     for selector in button_selectors:
                         loc = page.locator(selector)
                         if loc.count() > 0:
-                            loc.first.click()
+                            # force=True استعمال کیا تاکہ رکاوٹ کے باوجود کلک ہو جائے
+                            loc.first.click(force=True)
                             clicked = True
                             break
 
@@ -99,16 +108,26 @@ def download_and_convert_results():
                     
                     logging.info(f"Successfully generated PDF for Roll No {roll_no}")
 
-                    # اگر ویب سائٹ رزلٹ دکھانے کے بعد دوسرے پیج پر چلی گئی ہے تو واپس سرچ فارم پر آئیں
+                    # واپس مین پیج پر جانے کے لیے
                     if page.url != target_url:
-                        page.go_back(wait_until="domcontentloaded")
+                        page.goto(target_url, wait_until="domcontentloaded", timeout=15000)
+                        # سیشن دوبارہ سلیکٹ کریں کیونکہ پیج ریفریش ہوا ہے
+                        if session_val:
+                            for select in page.query_selector_all("select"):
+                                try:
+                                    select.select_option(label=session_val)
+                                    break
+                                except:
+                                    try:
+                                        select.select_option(value=session_val)
+                                        break
+                                    except:
+                                        continue
 
                 except Exception as e:
                     logging.error(f"Failed for Roll No {roll_no}: {str(e)}")
-                    # اگر کوئی ایرر آئے تو کوشش کریں کہ واپس مین پیج پر آ جائے
                     try:
-                        if page.url != target_url:
-                            page.goto(target_url, wait_until="domcontentloaded", timeout=15000)
+                        page.goto(target_url, wait_until="domcontentloaded", timeout=15000)
                     except:
                         pass
 
@@ -138,4 +157,3 @@ def download_and_convert_results():
 
 if __name__ == "__main__":
     download_and_convert_results()
-            
