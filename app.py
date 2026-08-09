@@ -7,9 +7,13 @@ logging.basicConfig(level=logging.INFO)
 
 def download_results():
     # گٹ ہب کے ان پٹس (UI) سے ویلیوز حاصل کرنا
-    target_url = os.environ.get("TARGET_URL", "https://www.bisefgd.edu.pk/result")
+    target_url = os.environ.get("TARGET_URL", "")
     session = os.environ.get("SESSION", "")
     
+    # اگر گٹ ہب سے 'None' سلیکٹ کیا گیا ہے تو سیشن کو خالی کر دیں
+    if session == 'None (No session required)':
+        session = ""
+
     # رول نمبرز کو انٹیجر (Integer) میں تبدیل کرنا
     try:
         start_roll = int(os.environ.get("START_ROLL", "100001"))
@@ -41,7 +45,7 @@ def download_results():
                     # ویب سائٹ پر جائیں
                     page.goto(target_url, wait_until="networkidle", timeout=30000)
 
-                    # اگر سیشن سلیکٹ کرنے کی ضرورت ہو تو اسے سلیکٹ کریں
+                    # اگر سیشن موجود ہو تو اسے سلیکٹ کریں
                     if session:
                         for select in page.query_selector_all("select"):
                             try:
