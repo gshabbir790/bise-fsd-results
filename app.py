@@ -13,7 +13,6 @@ def download_and_convert_results():
     if session_val == 'None':
         session_val = ""
 
-    # یہاں ہم نے فکس کر دیا ہے کہ اگر گٹ ہب سے ویلیو نہ آئے تو کم از کم 472014 سے 472020 تک چلے
     try:
         start_roll = int(os.environ.get("START_ROLL", "472014"))
         end_roll = int(os.environ.get("END_ROLL", "472020"))
@@ -28,7 +27,7 @@ def download_and_convert_results():
 
     successful_pdfs = []
 
-    logging.info(f"Starting optimized Playwright download for {len(roll_list)} roll numbers (from {start_roll} to {end_roll})...")
+    logging.info(f"Starting optimized Playwright download for {len(roll_list)} roll numbers...")
 
     try:
         with sync_playwright() as p:
@@ -44,17 +43,20 @@ def download_and_convert_results():
 
             page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
 
+            # بہتر اور لچکدار سیشن سلیکشن (Partial Match)
             if session_val:
                 for select in page.query_selector_all("select"):
-                    try:
-                        select.select_option(label=session_val)
-                        break
-                    except Exception:
-                        try:
-                            select.select_option(value=session_val)
+                    options = select.query_selector_all("option")
+                    matched_val = None
+                    for opt in options:
+                        opt_text = opt.inner_text().strip()
+                        # اگر یوزر کے سلیکٹ کردہ الفاظ ویب سائٹ کے آپشن میں موجود ہوں
+                        if session_val.lower() in opt_text.lower():
+                            matched_val = opt.get_attribute("value")
                             break
-                        except Exception:
-                            continue
+                    if matched_val:
+                        select.select_option(value=matched_val)
+                        break
 
             for roll_no in roll_list:
                 try:
@@ -105,15 +107,15 @@ def download_and_convert_results():
                         page.goto(target_url, wait_until="domcontentloaded", timeout=15000)
                         if session_val:
                             for select in page.query_selector_all("select"):
-                                try:
-                                    select.select_option(label=session_val)
-                                    break
-                                except:
-                                    try:
-                                        select.select_option(value=session_val)
+                                options = select.query_selector_all("option")
+                                matched_val = None
+                                for opt in options:
+                                    if session_val.lower() in opt.inner_text().strip().lower():
+                                        matched_val = opt.get_attribute("value")
                                         break
-                                    except:
-                                        continue
+                                if matched_val:
+                                    select.select_option(value=matched_val)
+                                    break
 
                 except Exception as e:
                     logging.error(f"Failed for Roll No {roll_no}: {str(e)}")
@@ -147,4 +149,3 @@ def download_and_convert_results():
 
 if __name__ == "__main__":
     download_and_convert_results()
-        
