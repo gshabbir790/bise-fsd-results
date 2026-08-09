@@ -4,13 +4,14 @@ import zipfile
 import threading
 import time
 import logging
-import traceback
+
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from playwright.sync_api import sync_playwright
 
 app = Flask(__name__)
 CORS(app)
+
 logging.basicConfig(level=logging.INFO)
 
 JOBS = {}
@@ -18,196 +19,125 @@ JOBS_DIR = "/tmp/bise_jobs"
 os.makedirs(JOBS_DIR, exist_ok=True)
 
 # ---------------------------------------------------------
-# 0. Home Route (API Status Check)
-# ---------------------------------------------------------
-@app.route('/', methods=['GET'])
-def index():
-    return jsonify({
-        "status": "online",
-        "message": "BISE Result Downloader API is running successfully!"
-    })
-
-# ---------------------------------------------------------
-# 1. Check Website Route (Advanced Auto-Fetch Sessions)
+# 1. Check Website Route (Advanced Debugging Version)
 # ---------------------------------------------------------
 @app.route("/api/check", methods=["GET", "POST"])
 def check_website():
     if request.method == "GET":
-        return jsonify({
-            "message": "API is working. Use POST with JSON: {'url': '...'}"
-        })
+        return jsonify({"message": "API is working. Please use POST request with a 'url' JSON body."})
 
+    data = request.get_json(force=True) or {}
+    url = data.get("url")
+
+    if not url:
+        return jsonify({"error": "url is required"}), 400
+
+    has_session = False
+    debug_info = {
+        "url": url,
+        "has_session": False,
+        "selects_found": 0,
+        "iframes_found": 0,
+        "html_snippet": ""
+    }
+    
     try:
-        data = request.get_json(silent=True) or {}
-        url = data.get("url")
-
-        if not url:
-            return jsonify({
-                "error": "url is required"
-            }), 400
-
-        has_session = False
-
-        print("\n========== CHECK START ==========")
-        print("Target URL:", url)
-
         with sync_playwright() as p:
-
             browser = p.chromium.launch(
                 headless=True,
                 args=[
                     "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu"
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage"
                 ]
             )
-
+            
             page = browser.new_page(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/138.0.0.0 Safari/537.36"
-                ),
-                viewport={
-                    "width": 1366,
-                    "height": 768
-                }
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+                viewport={"width": 1366, "height": 768}
             )
+            
+            print("--- ADVANCED DEBUGGING START ---")
+            
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(8000)
 
-            print("Browser launched")
-
-            page.goto(
-                url,
-                wait_until="domcontentloaded",
-                timeout=60000
-            )
-
-            print("Page loaded")
             print("Current URL:", page.url)
             print("Title:", page.title())
 
-            # JavaScript / AJAX کو مکمل ہونے کا وقت
-            page.wait_for_timeout(8000)
+            html = page.content()
+            debug_info["html_snippet"] = html[:1000]
+            print("HTML Length:", len(html))
+            print("HTML Snippet (first 3000 chars):\n", html[:3000])
+            
+            try:
+                page.screenshot(path="/tmp/debug.png", full_page=True)
+                print("Screenshot saved at /tmp/debug.png")
+            except Exception as se:
+                print(f"Screenshot error: {se}")
 
-            print("After 8 seconds")
-
-            # -------------------------------------------------
-            # MAIN PAGE SELECTORS
-            # -------------------------------------------------
-            selects = page.locator("select")
-            select_count = selects.count()
-
-            print("Main select count:", select_count)
-
-            for i in range(select_count):
-                select = selects.nth(i)
-
-                sid = (select.get_attribute("id") or "").lower()
-                sname = (select.get_attribute("name") or "").lower()
-
-                try:
-                    text = (select.inner_text() or "").lower()
-                except Exception:
-                    text = ""
-
-                options = select.locator("option")
-                option_count = options.count()
-
-                print(
-                    f"SELECT [{i}] "
-                    f"id={sid} "
-                    f"name={sname} "
-                    f"options={option_count} "
-                    f"text={text[:100]}"
-                )
-
-                # Strong name/id detection
-                keywords = ["session", "sess", "exam", "year", "result"]
-
-                if any(k in sid for k in keywords):
+            selects = page.locator("select").all()
+            debug_info["selects_found"] = len(selects)
+            print("Select count (Main Page):", len(selects))
+            
+            for i, sel in enumerate(selects):
+                name_attr = sel.get_attribute("name") or ""
+                id_attr = sel.get_attribute("id") or ""
+                print(f"Select {i}: id={id_attr}, name={name_attr}")
+                if "session" in name_attr.lower() or "session" in id_attr.lower() or "year" in name_attr.lower():
                     has_session = True
 
-                if any(k in sname for k in keywords):
-                    has_session = True
+            print("Input count:", page.locator("input").count())
+            print("Button count:", page.locator("button").count())
+            print("Form count:", page.locator("form").count())
+            print("Combobox count:", page.locator("[role='combobox']").count())
+            print("Select2 count:", page.locator(".select2").count())
+            print("Bootstrap Select count:", page.locator(".bootstrap-select").count())
+            
+            frames = page.frames
+            debug_info["iframes_found"] = len(frames)
+            print("Total Frames (including main):", len(frames))
 
-                # Text based detection
-                text_keywords = [
-                    "session", "annual", "supplementary", 
-                    "exam", "2024", "2025", "2026"
-                ]
+            for i, frame in enumerate(frames):
+                if frame != page.main_frame:
+                    print(f"Frame [{i}] URL: {frame.url}")
+                    try:
+                        frame_selects = frame.locator("select").all()
+                        print(f"Frame selects count: {len(frame_selects)}")
+                        if len(frame_selects) > 0:
+                            debug_info["selects_found"] += len(frame_selects)
+                            for sel in frame_selects:
+                                name_attr = sel.get_attribute("name") or ""
+                                id_attr = sel.get_attribute("id") or ""
+                                if "session" in name_attr.lower() or "session" in id_attr.lower() or "year" in name_attr.lower():
+                                    has_session = True
+                    except Exception as fe:
+                        print(f"Error inspecting frame: {fe}")
 
-                if any(k in text for k in text_keywords):
-                    has_session = True
-
-                # Multiple options can indicate a selectable session
-                if option_count > 1:
-                    print(f"Possible dropdown detected: SELECT [{i}]")
-
-            # -------------------------------------------------
-            # FRAMES CHECK
-            # -------------------------------------------------
-            print("Total frames:", len(page.frames))
-
-            for frame_index, frame in enumerate(page.frames):
-                print(f"FRAME [{frame_index}] URL: {frame.url}")
-
-                try:
-                    frame_selects = frame.locator("select")
-                    frame_select_count = frame_selects.count()
-
-                    print(f"Frame [{frame_index}] selects:", frame_select_count)
-
-                    for i in range(frame_select_count):
-                        select = frame_selects.nth(i)
-                        sid = (select.get_attribute("id") or "").lower()
-                        sname = (select.get_attribute("name") or "").lower()
-                        option_count = select.locator("option").count()
-
-                        print(
-                            f"  FRAME SELECT [{i}] "
-                            f"id={sid} "
-                            f"name={sname} "
-                            f"options={option_count}"
-                        )
-
-                        if option_count > 1:
-                            has_session = True
-
-                        if (
-                            "session" in sid or "session" in sname
-                            or "year" in sid or "year" in sname
-                            or "exam" in sid or "exam" in sname
-                        ):
-                            has_session = True
-
-                except Exception as frame_error:
-                    print(f"Frame [{frame_index}] error:", repr(frame_error))
-
-            print("FINAL has_session:", has_session)
-            print("========== CHECK END ==========\n")
-
-            # IMPORTANT: No browser.close() here. 
-            # with sync_playwright() will auto-cleanup.
-
+            debug_info["has_session"] = has_session
+            print("Final has_session =", has_session)
+            print("--- ADVANCED DEBUGGING END ---")
+            
         return jsonify({
+            "success": True,
             "has_session": has_session,
-            "url": url
+            "debug": debug_info
         })
 
     except Exception as e:
-        print("\n========== CHECK ERROR ==========")
+        import traceback
         traceback.print_exc()
-        print("ERROR:", repr(e))
-        print("========== CHECK ERROR END ==========\n")
-
+        print(f"Check URL Error: {e}")
         return jsonify({
-            "has_session": False,
-            "error": str(e)
+            "success": False,
+            "error": str(e),
+            "debug": debug_info
         }), 500
 
 # ---------------------------------------------------------
 # 2. Scrape & Download Logic (Background Thread)
 # ---------------------------------------------------------
+# تبدیلی: اب یہ start_roll, end_roll کی بجائے رول نمبرز کی پوری لسٹ (roll_list) لے گا
 def run_job(job_id, target_url, session, roll_list):
     job = JOBS[job_id]
     out_dir = os.path.join(JOBS_DIR, job_id)
@@ -216,11 +146,12 @@ def run_job(job_id, target_url, session, roll_list):
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(
-                headless=True, 
+                headless=True,
                 args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
             )
             page = browser.new_page()
 
+            # تبدیلی: اب رینج کی بجائے دی گئی لسٹ میں سے ایک ایک رول نمبر چلے گا
             for roll_no in roll_list:
                 try:
                     page.goto(target_url, wait_until="networkidle", timeout=30000)
@@ -246,11 +177,11 @@ def run_job(job_id, target_url, session, roll_list):
                                 pass
 
                     roll_input = (
-                        page.query_selector("input[type='text']") or 
-                        page.query_selector("input[name*='roll']") or 
-                        page.query_selector("input[id*='roll']")
+                        page.query_selector("input[type='text']")
+                        or page.query_selector("input[name*='roll']")
+                        or page.query_selector("input[id*='roll']")
                     )
-
+                    
                     if roll_input is None:
                         inputs = page.query_selector_all("input")
                         for inp in inputs:
@@ -266,9 +197,9 @@ def run_job(job_id, target_url, session, roll_list):
 
                     clicked = False
                     button_selectors = [
-                        "text=Get Result", "text=Search", "text=Submit",
-                        "text=View Result", "text=Show Result", "text=Find Result",
-                        "text=Search Result", "button[type='submit']", "input[type='submit']"
+                        "text=Get Result", "text=Search", "text=Submit", "text=View Result",
+                        "text=Show Result", "text=Find Result", "text=Search Result",
+                        "button[type='submit']", "input[type='submit']"
                     ]
 
                     for selector in button_selectors:
@@ -292,23 +223,23 @@ def run_job(job_id, target_url, session, roll_list):
                     page.pdf(path=pdf_path, format="A4", print_background=True)
 
                     job["done"] += 1
-
                 except Exception as e:
                     job["failed"].append({"roll_no": roll_no, "error": str(e)})
                 finally:
                     job["processed"] += 1
 
-            zip_path = os.path.join(JOBS_DIR, f"{job_id}.zip")
-            with zipfile.ZipFile(zip_path, "w") as zf:
-                for fname in os.listdir(out_dir):
-                    zf.write(os.path.join(out_dir, fname), fname)
+        zip_path = os.path.join(JOBS_DIR, f"{job_id}.zip")
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            for fname in os.listdir(out_dir):
+                zf.write(os.path.join(out_dir, fname), fname)
 
-            job["zip_path"] = zip_path
-            job["status"] = "done"
+        job["zip_path"] = zip_path
+        job["status"] = "done"
 
     except Exception as e:
         job["status"] = "error"
         job["error"] = str(e)
+
 
 # ---------------------------------------------------------
 # 3. Job Start Route
@@ -319,18 +250,21 @@ def start_job():
     target_url = data.get("url")
     session = data.get("session", "")
     
+    # نیا آپشن ریسیو کرنا
     custom_rolls_raw = data.get("custom_rolls", [])
     start_roll = data.get("start_roll", 0)
     end_roll = data.get("end_roll", 0)
 
     roll_list = []
 
+    # اگر یوزر نے مخصوص رول نمبرز بھیجے ہیں
     if custom_rolls_raw and len(custom_rolls_raw) > 0:
         for r in custom_rolls_raw:
             try:
                 roll_list.append(int(r))
             except ValueError:
-                pass 
+                pass # غلط ان پٹ کو نظر انداز کر دیں
+    # بصورت دیگر نارمل رینج استعمال کریں
     else:
         try:
             start_r = int(start_roll)
@@ -357,6 +291,7 @@ def start_job():
         "created": time.time(),
     }
 
+    # Thread میں roll_list بھیجی جا رہی ہے
     t = threading.Thread(target=run_job, args=(job_id, target_url, session, roll_list))
     t.start()
 
@@ -386,8 +321,14 @@ def download(job_id):
     job = JOBS.get(job_id)
     if not job or job["status"] != "done":
         return jsonify({"error": "not ready"}), 400
-        
     return send_file(job["zip_path"], as_attachment=True, download_name=f"results_{job_id}.zip")
+
+# ---------------------------------------------------------
+# 6. Health Check / Root Route
+# ---------------------------------------------------------
+@app.route("/", methods=["GET"])
+def health():
+    return jsonify({"status": "ok", "message": "Universal BISE Result Downloader backend is running"})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
