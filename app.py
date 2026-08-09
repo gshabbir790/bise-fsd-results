@@ -5,7 +5,7 @@ import threading
 import time
 import logging
 import traceback
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, render_template
 from flask_cors import CORS
 from playwright.sync_api import sync_playwright
 
@@ -16,6 +16,14 @@ logging.basicConfig(level=logging.INFO)
 JOBS = {}
 JOBS_DIR = "/tmp/bise_jobs"
 os.makedirs(JOBS_DIR, exist_ok=True)
+
+# ---------------------------------------------------------
+# 0. Home Route (HTML Page Loading)
+# ---------------------------------------------------------
+@app.route('/', methods=['GET'])
+def index():
+    # آپ کا ڈیزائن کیا ہوا HTML پیج 'templates' فولڈر میں 'index.html' کے نام سے ہونا چاہیے
+    return render_template('index.html')
 
 # ---------------------------------------------------------
 # 1. Check Website Route (Auto-Fetch Sessions Version)
@@ -262,13 +270,6 @@ def download(job_id):
         return jsonify({"error": "not ready"}), 400
         
     return send_file(job["zip_path"], as_attachment=True, download_name=f"results_{job_id}.zip")
-
-# ---------------------------------------------------------
-# 6. Health Check / Root Route
-# ---------------------------------------------------------
-@app.route("/", methods=["GET"])
-def health():
-    return jsonify({"status": "ok", "message": "Universal BISE Result Downloader backend is running"})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
