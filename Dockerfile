@@ -1,6 +1,6 @@
 FROM python:3.10-slim
 
-# ضروری سسٹمز اور سی پلس پلس کمپائلر انسٹال کرنا
+# تمام ضروری براؤزر ڈیپینڈنسیز اور بلڈ ٹولز انسٹال کرنا
 RUN apt-get update && apt-get install -y \
     build-essential \
     libnss3 \
@@ -44,4 +44,5 @@ COPY . .
 
 EXPOSE 8080
 
-CMD ["python", "-m", "streamlit", "run", "app.py", "--server.port=8080", "--server.address=0.0.0.0"]
+# Gunicorn کے ذریعے Flask ایپ چلانا
+CMD ["gunicorn", "-w", "1", "-b", "0.0.0.0:8080", "app:app"]
