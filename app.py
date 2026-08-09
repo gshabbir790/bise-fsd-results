@@ -5,7 +5,7 @@ import threading
 import time
 import logging
 import traceback
-from flask import Flask, request, jsonify, send_file, render_template
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from playwright.sync_api import sync_playwright
 
@@ -18,12 +18,14 @@ JOBS_DIR = "/tmp/bise_jobs"
 os.makedirs(JOBS_DIR, exist_ok=True)
 
 # ---------------------------------------------------------
-# 0. Home Route (HTML Page Loading)
+# 0. Home Route (API Status Check)
 # ---------------------------------------------------------
 @app.route('/', methods=['GET'])
 def index():
-    # آپ کا ڈیزائن کیا ہوا HTML پیج 'templates' فولڈر میں 'index.html' کے نام سے ہونا چاہیے
-    return render_template('index.html')
+    return jsonify({
+        "status": "online",
+        "message": "BISE Result Downloader API is running successfully!"
+    })
 
 # ---------------------------------------------------------
 # 1. Check Website Route (Advanced Auto-Fetch Sessions)
