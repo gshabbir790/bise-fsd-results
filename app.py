@@ -1,6 +1,5 @@
 import os
 import uuid
-import zipfile
 import threading
 import time
 import logging
@@ -8,6 +7,7 @@ import traceback
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from playwright.sync_api import sync_playwright
+from pypdf import PdfWriter, PdfReader
 
 app = Flask(__name__)
 CORS(app)
@@ -236,12 +236,31 @@ def run_job(job_id, target_url, session_value, session_label, selector_meta, rol
                     page.close()
                     job["processed"] += 1
 
-            zip_path = os.path.join(JOBS_DIR, f"{job_id}.zip")
-            with zipfile.ZipFile(zip_path, "w") as zf:
-                for fname in os.listdir(out_dir):
-                    zf.write(os.path.join(out_dir, fname), fname)
+            pdf_files = []
+            for fname in os.listdir(out_dir):
+                if fname.lower().endswith(".pdf"):
+                    pdf_files.append(fname)
 
-            job["zip_path"] = zip_path
+            pdf_files.sort(key=lambda x: int(os.path.splitext(x)[0]))
+
+            if not pdf_files:
+                raise Exception("کوئی valid PDF تیار نہیں ہوئی")
+
+            merged_path = os.path.join(JOBS_DIR, f"results_{job_id}.pdf")
+
+            writer = PdfWriter()
+            for fname in pdf_files:
+                pdf_path = os.path.join(out_dir, fname)
+                reader = PdfReader(pdf_path)
+                for page in reader.pages:
+                    writer.add_page(page)
+
+            with open(merged_path, "wb") as output:
+                writer.write(output)
+
+            writer.close()
+
+            job["merged_path"] = merged_path
             job["status"] = "done"
             browser.close()
 
@@ -294,7 +313,7 @@ def start_job():
         "processed": 0,
         "done": 0,
         "failed": [],
-        "zip_path": None,
+        "merged_path": None,
         "created": time.time(),
     }
 
@@ -325,15 +344,29 @@ def job_status(job_id):
     })
 
 # ---------------------------------------------------------
-# 5. Zip Download Route
+# 5. Merged PDF Download Route
 # ---------------------------------------------------------
 @app.route("/api/download/<job_id>", methods=["GET"])
 def download(job_id):
     job = JOBS.get(job_id)
-    if not job or job["status"] != "done" or not job.get("zip_path"):
-        return jsonify({"success": False, "error": "file not ready"}), 400
-        
-    return send_file(job["zip_path"], as_attachment=True, download_name=f"results_{job_id}.zip")
+
+    if (
+        not job
+        or job["status"] != "done"
+        or not job.get("merged_path")
+        or not os.path.exists(job["merged_path"])
+    ):
+        return jsonify({
+            "success": False,
+            "error": "merged PDF not ready"
+        }), 400
+
+    return send_file(
+        job["merged_path"],
+        as_attachment=True,
+        download_name=f"BISE_Results_{job_id}.pdf",
+        mimetype="application/pdf"
+    )
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
