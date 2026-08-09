@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 import threading
 import time
@@ -255,12 +256,29 @@ def run_job(job_id, target_url, session_value, session_label, selector_meta, rol
                 for page in reader.pages:
                     writer.add_page(page)
 
+            # --- Compression (سائز کم کرنے کے لیے) ---
+            for wpage in writer.pages:
+                try:
+                    wpage.compress_content_streams(level=6)
+                except Exception:
+                    pass
+                # امیجز کا کوالٹی کم کر کے سائز مزید کم کریں (اگر pypdf ورژن سپورٹ کرے)
+                try:
+                    for img in wpage.images:
+                        img.replace(img.image, quality=45)
+                except Exception:
+                    pass
+
             with open(merged_path, "wb") as output:
                 writer.write(output)
 
             writer.close()
 
+            merged_size_bytes = os.path.getsize(merged_path)
+
             job["merged_path"] = merged_path
+            job["merged_size_bytes"] = merged_size_bytes
+            job["merged_size_mb"] = round(merged_size_bytes / (1024 * 1024), 2)
             job["status"] = "done"
             browser.close()
 
@@ -314,6 +332,8 @@ def start_job():
         "done": 0,
         "failed": [],
         "merged_path": None,
+        "merged_size_bytes": None,
+        "merged_size_mb": None,
         "created": time.time(),
     }
 
@@ -340,11 +360,13 @@ def job_status(job_id):
         "processed": job["processed"],
         "done": job["done"],
         "failed": job["failed"],
-        "error": job.get("error")
+        "error": job.get("error"),
+        "merged_size_bytes": job.get("merged_size_bytes"),
+        "merged_size_mb": job.get("merged_size_mb")
     })
 
 # ---------------------------------------------------------
-# 5. Merged PDF Download Route
+# 5. Merged PDF Download Route (کسٹم فائل نام سپورٹ کے ساتھ)
 # ---------------------------------------------------------
 @app.route("/api/download/<job_id>", methods=["GET"])
 def download(job_id):
@@ -361,10 +383,24 @@ def download(job_id):
             "error": "merged PDF not ready"
         }), 400
 
+    custom_name = request.args.get("filename", "").strip()
+
+    if custom_name:
+        # صرف محفوظ کریکٹرز رکھیں (path traversal سے بچاؤ)
+        custom_name = re.sub(r'[^A-Za-z0-9آ-ی_\-\s]', '', custom_name).strip()
+        custom_name = re.sub(r'\s+', '_', custom_name)
+
+    if custom_name:
+        if not custom_name.lower().endswith(".pdf"):
+            custom_name += ".pdf"
+        download_name = custom_name
+    else:
+        download_name = f"BISE_Results_{job_id}.pdf"
+
     return send_file(
         job["merged_path"],
         as_attachment=True,
-        download_name=f"BISE_Results_{job_id}.pdf",
+        download_name=download_name,
         mimetype="application/pdf"
     )
 
