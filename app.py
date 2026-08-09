@@ -1,33 +1,86 @@
 import os
+import uuid
+import zipfile
+import threading
+import time
 import logging
+import traceback
+from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
 from playwright.sync_api import sync_playwright
-from pypdf import PdfWriter
 
+app = Flask(__name__)
+CORS(app)
 logging.basicConfig(level=logging.INFO)
 
-def download_and_convert_results():
-    target_url = os.environ.get("TARGET_URL", "")
-    session_val = os.environ.get("SESSION", "")
-    merge_choice = os.environ.get("MERGE_PDFS", "Yes (Merge into one file)")
+JOBS = {}
+JOBS_DIR = "/tmp/bise_jobs"
+os.makedirs(JOBS_DIR, exist_ok=True)
+
+# ---------------------------------------------------------
+# 1. Check Website Route (Auto-Fetch Sessions Version)
+# ---------------------------------------------------------
+@app.route("/api/check", methods=["GET", "POST"])
+def check_website():
+    if request.method == "GET":
+        return jsonify({"message": "API is working. Please use POST request with a 'url' JSON body."})
+        
+    data = request.get_json(force=True) or {}
+    target_url = data.get("url")
     
-    if session_val == 'None':
-        session_val = ""
+    if not target_url:
+        return jsonify({'error': 'URL is required'}), 400
 
     try:
-        start_roll = int(os.environ.get("START_ROLL", "472014"))
-        end_roll = int(os.environ.get("END_ROLL", "472020"))
-    except ValueError:
-        start_roll = 472014
-        end_roll = 472020
+        with sync_playwright() as p:
+            # Railway کے لیے ضروری Arguments کے ساتھ Browser لانچ کیا گیا ہے
+            browser = p.chromium.launch(
+                headless=True, 
+                args=[
+                    "--no-sandbox", 
+                    "--disable-setuid-sandbox", 
+                    "--disable-dev-shm-usage"
+                ]
+            )
+            page = browser.new_page(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+                viewport={"width": 1366, "height": 768}
+            )
+            
+            page.goto(target_url, timeout=60000, wait_until='networkidle')
+            
+            # سیشن یا ایگزام کا ڈراپ ڈاؤن ڈھونڈنا
+            session_select = page.query_selector('select[name*="session" i], select[name*="exam" i], select[id*="session" i], select[id*="exam" i], select[name*="ddl" i]')
+            
+            sessions_list = []
+            if session_select:
+                options = session_select.query_selector_all('option')
+                for opt in options:
+                    text = opt.inner_text().strip()
+                    val = opt.get_attribute('value') or text
+                    # خالی یا ڈیفالٹ اپشنز کو فلٹر کرنا
+                    if text and not any(k in text.lower() for k in ['select', 'choose', 'پوچھیں', '--']):
+                        sessions_list.append({'label': text, 'value': val})
 
-    roll_list = list(range(start_roll, end_roll + 1))
-    
-    pdf_dir = "/tmp/bise_results"
-    os.makedirs(pdf_dir, exist_ok=True)
+            browser.close()
+            
+            return jsonify({
+                'success': True,
+                'has_session': len(sessions_list) > 0,
+                'sessions': sessions_list
+            })
+            
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
 
-    successful_pdfs = []
-
-    logging.info(f"Starting optimized Playwright download for {len(roll_list)} roll numbers (from {start_roll} to {end_roll})...")
+# ---------------------------------------------------------
+# 2. Scrape & Download Logic (Background Thread)
+# ---------------------------------------------------------
+def run_job(job_id, target_url, session, roll_list):
+    job = JOBS[job_id]
+    out_dir = os.path.join(JOBS_DIR, job_id)
+    os.makedirs(out_dir, exist_ok=True)
 
     try:
         with sync_playwright() as p:
@@ -35,115 +88,188 @@ def download_and_convert_results():
                 headless=True, 
                 args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
             )
-            context = browser.new_context()
-            page = context.new_page()
+            page = browser.new_page()
 
-            # سپیڈ تیز کرنے کے لیے فالتو تصاویر بلاک کرنا
-            page.route("**/*.{png,jpg,jpeg,svg,gif,woff,woff2}", lambda route: route.abort())
-
-            page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
-
-            # سیشن سلیکشن (لچکدار طریقہ)
-            if session_val:
-                for select in page.query_selector_all("select"):
-                    options = select.query_selector_all("option")
-                    matched_val = None
-                    for opt in options:
-                        if session_val.lower() in opt.inner_text().strip().lower():
-                            matched_val = opt.get_attribute("value")
-                            break
-                    if matched_val:
-                        select.select_option(value=matched_val)
-                        break
-
+            # رینج کی بجائے دی گئی لسٹ میں سے ایک ایک رول نمبر چلے گا
             for roll_no in roll_list:
                 try:
-                    try:
-                        close_btn = page.query_selector(".modal .close, button.close, [data-dismiss='modal']")
-                        if close_btn:
-                            close_btn.click()
-                    except:
-                        pass
+                    page.goto(target_url, wait_until="networkidle", timeout=30000)
+
+                    if session:
+                        selected = False
+                        for select in page.query_selector_all("select"):
+                            try:
+                                select.select_option(label=session)
+                                selected = True
+                                break
+                            except Exception:
+                                try:
+                                    select.select_option(value=session)
+                                    selected = True
+                                    break
+                                except Exception:
+                                    continue
+                        if not selected:
+                            try:
+                                page.select_option("select", label=session)
+                            except Exception:
+                                pass
 
                     roll_input = (
-                        page.query_selector("input[id*='roll']") or
-                        page.query_selector("input[name*='roll']") or
-                        page.query_selector("input[type='text']")
+                        page.query_selector("input[type='text']") or 
+                        page.query_selector("input[name*='roll']") or 
+                        page.query_selector("input[id*='roll']")
                     )
 
                     if roll_input is None:
-                        raise Exception("Roll number input field not found")
+                        inputs = page.query_selector_all("input")
+                        for inp in inputs:
+                            itype = (inp.get_attribute("type") or "").lower()
+                            if itype in ["", "text", "number"]:
+                                roll_input = inp
+                                break
 
-                    roll_input.fill("")
+                    if roll_input is None:
+                        raise Exception("Roll No input field not found")
+
                     roll_input.fill(str(roll_no))
 
-                    button_selectors = [
-                        "input[type='submit']", "button[type='submit']",
-                        "text=Search", "text=Get Result", "text=Submit", "text=View Result"
-                    ]
-                    
                     clicked = False
+                    button_selectors = [
+                        "text=Get Result", "text=Search", "text=Submit",
+                        "text=View Result", "text=Show Result", "text=Find Result",
+                        "text=Search Result", "button[type='submit']", "input[type='submit']"
+                    ]
+
                     for selector in button_selectors:
                         loc = page.locator(selector)
                         if loc.count() > 0:
-                            loc.first.click(force=True)
+                            loc.first.click()
                             clicked = True
                             break
 
                     if not clicked:
-                        page.evaluate("if(typeof __doPostBack == 'function') { __doPostBack(); }")
+                        btn = page.query_selector("button") or page.query_selector("input[type='button']")
+                        if btn:
+                            btn.click()
+                        else:
+                            raise Exception("Submit button not found")
 
-                    page.wait_for_load_state("domcontentloaded", timeout=10000)
-                    
-                    pdf_path = os.path.join(pdf_dir, f"{roll_no}.pdf")
+                    page.wait_for_load_state("networkidle", timeout=30000)
+                    page.wait_for_timeout(1500)
+
+                    pdf_path = os.path.join(out_dir, f"{roll_no}.pdf")
                     page.pdf(path=pdf_path, format="A4", print_background=True)
-                    successful_pdfs.append(pdf_path)
-                    
-                    logging.info(f"Successfully generated PDF for Roll No {roll_no}")
 
-                    if page.url != target_url:
-                        page.goto(target_url, wait_until="domcontentloaded", timeout=15000)
-                        if session_val:
-                            for select in page.query_selector_all("select"):
-                                options = select.query_selector_all("option")
-                                matched_val = None
-                                for opt in options:
-                                    if session_val.lower() in opt.inner_text().strip().lower():
-                                        matched_val = opt.get_attribute("value")
-                                        break
-                                if matched_val:
-                                    select.select_option(value=matched_val)
-                                    break
+                    job["done"] += 1
 
                 except Exception as e:
-                    logging.error(f"Failed for Roll No {roll_no}: {str(e)}")
-                    try:
-                        page.goto(target_url, wait_until="domcontentloaded", timeout=15000)
-                    except:
-                        pass
+                    job["failed"].append({"roll_no": roll_no, "error": str(e)})
+                finally:
+                    job["processed"] += 1
 
-            browser.close()
+            zip_path = os.path.join(JOBS_DIR, f"{job_id}.zip")
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                for fname in os.listdir(out_dir):
+                    zf.write(os.path.join(out_dir, fname), fname)
 
-        if "Yes" in merge_choice and successful_pdfs:
-            logging.info("Merging all PDFs into a single master file...")
-            merger = PdfWriter()
-            for pdf in successful_pdfs:
-                merger.append(pdf)
-            
-            merged_pdf_path = os.path.join(pdf_dir, "All_Results_Merged.pdf")
-            merger.write(merged_pdf_path)
-            merger.close()
-
-            for pdf in successful_pdfs:
-                try:
-                    os.remove(pdf)
-                except Exception:
-                    pass
-
-            logging.info("Successfully created merged PDF and removed individual files.")
+            job["zip_path"] = zip_path
+            job["status"] = "done"
 
     except Exception as e:
-        logging.error(f"Error during execution: {str(e)}")
+        job["status"] = "error"
+        job["error"] = str(e)
+
+# ---------------------------------------------------------
+# 3. Job Start Route
+# ---------------------------------------------------------
+@app.route("/api/job", methods=["POST"])
+def start_job():
+    data = request.get_json(force=True) or {}
+    target_url = data.get("url")
+    session = data.get("session", "")
+    
+    # نیا آپشن ریسیو کرنا
+    custom_rolls_raw = data.get("custom_rolls", [])
+    start_roll = data.get("start_roll", 0)
+    end_roll = data.get("end_roll", 0)
+
+    roll_list = []
+
+    # اگر یوزر نے مخصوص رول نمبرز بھیجے ہیں
+    if custom_rolls_raw and len(custom_rolls_raw) > 0:
+        for r in custom_rolls_raw:
+            try:
+                roll_list.append(int(r))
+            except ValueError:
+                pass  # غلط ان پٹ کو نظر انداز کر دیں
+    # بصورت دیگر نارمل رینج استعمال کریں
+    else:
+        try:
+            start_r = int(start_roll)
+            end_r = int(end_roll)
+            if start_r > 0 and end_r >= start_r:
+                roll_list = list(range(start_r, end_r + 1))
+        except ValueError:
+            pass
+
+    if not target_url or not roll_list:
+        return jsonify({"error": "invalid input یا رول نمبرز درست نہیں ہیں"}), 400
+
+    if len(roll_list) > 300:
+        return jsonify({"error": "ایک بار میں 300 سے زیادہ رول نمبرز کی اجازت نہیں"}), 400
+
+    job_id = str(uuid.uuid4())
+    JOBS[job_id] = {
+        "status": "running",
+        "total": len(roll_list),
+        "processed": 0,
+        "done": 0,
+        "failed": [],
+        "zip_path": None,
+        "created": time.time(),
+    }
+
+    # Thread میں roll_list بھیجی جا رہی ہے
+    t = threading.Thread(target=run_job, args=(job_id, target_url, session, roll_list))
+    t.start()
+
+    return jsonify({"job_id": job_id})
+
+# ---------------------------------------------------------
+# 4. Job Status Route
+# ---------------------------------------------------------
+@app.route("/api/status/<job_id>", methods=["GET"])
+def job_status(job_id):
+    job = JOBS.get(job_id)
+    if not job:
+        return jsonify({"error": "job not found"}), 404
+    return jsonify({
+        "status": job["status"],
+        "total": job["total"],
+        "processed": job["processed"],
+        "done": job["done"],
+        "failed": job["failed"],
+    })
+
+# ---------------------------------------------------------
+# 5. Zip Download Route
+# ---------------------------------------------------------
+@app.route("/api/download/<job_id>", methods=["GET"])
+def download(job_id):
+    job = JOBS.get(job_id)
+    if not job or job["status"] != "done":
+        return jsonify({"error": "not ready"}), 400
+        
+    return send_file(job["zip_path"], as_attachment=True, download_name=f"results_{job_id}.zip")
+
+# ---------------------------------------------------------
+# 6. Health Check / Root Route
+# ---------------------------------------------------------
+@app.route("/", methods=["GET"])
+def health():
+    return jsonify({"status": "ok", "message": "Universal BISE Result Downloader backend is running"})
 
 if __name__ == "__main__":
-    download_and_convert_results()
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
