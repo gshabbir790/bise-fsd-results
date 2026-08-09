@@ -18,61 +18,108 @@ JOBS_DIR = "/tmp/bise_jobs"
 os.makedirs(JOBS_DIR, exist_ok=True)
 
 # ---------------------------------------------------------
-# 1. Check Website Route (Auto-Fetch Sessions Version)
+# 0. Home Route (API Status Check - دوسری فائل سے لیا گیا)
+# ---------------------------------------------------------
+@app.route('/', methods=['GET'])
+def index():
+    return jsonify({
+        "status": "online",
+        "message": "BISE Result Downloader API is running successfully!"
+    })
+
+# ---------------------------------------------------------
+# 1. Check Website Route (دونوں فائلوں کا بہترین امتزاج)
 # ---------------------------------------------------------
 @app.route("/api/check", methods=["GET", "POST"])
 def check_website():
     if request.method == "GET":
-        return jsonify({"message": "API is working. Please use POST request with a 'url' JSON body."})
-        
-    data = request.get_json(force=True) or {}
-    target_url = data.get("url")
-    
-    if not target_url:
-        return jsonify({'error': 'URL is required'}), 400
+        return jsonify({
+            "message": "API is working. Use POST with JSON: {'url': '...'}"
+        })
 
     try:
+        data = request.get_json(silent=True) or {}
+        url = data.get("url")
+
+        if not url:
+            return jsonify({"error": "url is required"}), 400
+
+        print("\n========== CHECK START ==========")
+        print("Target URL:", url)
+
+        sessions_list = []
+
         with sync_playwright() as p:
-            # Railway کے لیے ضروری Arguments کے ساتھ Browser لانچ کیا گیا ہے
             browser = p.chromium.launch(
-                headless=True, 
-                args=[
-                    "--no-sandbox", 
-                    "--disable-setuid-sandbox", 
-                    "--disable-dev-shm-usage"
-                ]
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
             )
+
             page = browser.new_page(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
                 viewport={"width": 1366, "height": 768}
             )
-            
-            page.goto(target_url, timeout=60000, wait_until='networkidle')
-            
-            # سیشن یا ایگزام کا ڈراپ ڈاؤن ڈھونڈنا
-            session_select = page.query_selector('select[name*="session" i], select[name*="exam" i], select[id*="session" i], select[id*="exam" i], select[name*="ddl" i]')
-            
-            sessions_list = []
-            if session_select:
-                options = session_select.query_selector_all('option')
-                for opt in options:
-                    text = opt.inner_text().strip()
-                    val = opt.get_attribute('value') or text
-                    # خالی یا ڈیفالٹ اپشنز کو فلٹر کرنا
-                    if text and not any(k in text.lower() for k in ['select', 'choose', 'پوچھیں', '--']):
-                        sessions_list.append({'label': text, 'value': val})
 
-            browser.close()
+            page.goto(url, wait_until="networkidle", timeout=60000)
             
-            return jsonify({
-                'success': True,
-                'has_session': len(sessions_list) > 0,
-                'sessions': sessions_list
-            })
-            
+            # جاوا اسکرپٹ لوڈ ہونے کے لیے تھوڑا انتظار
+            page.wait_for_timeout(5000)
+
+            # ایک فنکشن جو کسی بھی پیج یا فریم سے سیشنز نکالے گا (پہلی فائل کا لاجک)
+            def extract_sessions_from_context(context_page):
+                extracted = []
+                try:
+                    # سیشن سے متعلقہ تمام ڈراپ ڈاؤنز کو ڈھونڈیں
+                    selects = context_page.query_selector_all('select')
+                    for select in selects:
+                        name = (select.get_attribute('name') or '').lower()
+                        sid = (select.get_attribute('id') or '').lower()
+                        
+                        # اگر ڈراپ ڈاؤن کا نام سیشن، ایگزام وغیرہ سے ملتا ہے
+                        if any(k in name or k in sid for k in ["session", "exam", "year", "ddl", "sess"]):
+                            options = select.query_selector_all('option')
+                            for opt in options:
+                                text = opt.inner_text().strip()
+                                val = opt.get_attribute('value') or text
+                                # فالتو آپشنز کو نکالیں
+                                if text and not any(k in text.lower() for k in ['select', 'choose', 'پوچھیں', '--']):
+                                    extracted.append({'label': text, 'value': val})
+                except Exception as ex:
+                    pass
+                return extracted
+
+            # 1. مین پیج سے سیشنز نکالیں
+            main_page_sessions = extract_sessions_from_context(page)
+            for s in main_page_sessions:
+                if s not in sessions_list:
+                    sessions_list.append(s)
+
+            # 2. فریمز کے اندر سے سیشنز نکالیں (دوسری فائل کا لاجک)
+            for frame in page.frames:
+                frame_sessions = extract_sessions_from_context(frame)
+                for s in frame_sessions:
+                    if s not in sessions_list:
+                        sessions_list.append(s)
+
+            print("Extracted Sessions:", sessions_list)
+            print("========== CHECK END ==========\n")
+
+        return jsonify({
+            "success": True,
+            "has_session": len(sessions_list) > 0,
+            "sessions": sessions_list,
+            "url": url
+        })
+
     except Exception as e:
+        print("\n========== CHECK ERROR ==========")
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        print("========== CHECK ERROR END ==========\n")
+        return jsonify({
+            "success": False,
+            "has_session": False,
+            "error": str(e)
+        }), 500
 
 # ---------------------------------------------------------
 # 2. Scrape & Download Logic (Background Thread)
@@ -90,7 +137,6 @@ def run_job(job_id, target_url, session, roll_list):
             )
             page = browser.new_page()
 
-            # رینج کی بجائے دی گئی لسٹ میں سے ایک ایک رول نمبر چلے گا
             for roll_no in roll_list:
                 try:
                     page.goto(target_url, wait_until="networkidle", timeout=30000)
@@ -189,21 +235,18 @@ def start_job():
     target_url = data.get("url")
     session = data.get("session", "")
     
-    # نیا آپشن ریسیو کرنا
     custom_rolls_raw = data.get("custom_rolls", [])
     start_roll = data.get("start_roll", 0)
     end_roll = data.get("end_roll", 0)
 
     roll_list = []
 
-    # اگر یوزر نے مخصوص رول نمبرز بھیجے ہیں
     if custom_rolls_raw and len(custom_rolls_raw) > 0:
         for r in custom_rolls_raw:
             try:
                 roll_list.append(int(r))
             except ValueError:
-                pass  # غلط ان پٹ کو نظر انداز کر دیں
-    # بصورت دیگر نارمل رینج استعمال کریں
+                pass 
     else:
         try:
             start_r = int(start_roll)
@@ -230,7 +273,6 @@ def start_job():
         "created": time.time(),
     }
 
-    # Thread میں roll_list بھیجی جا رہی ہے
     t = threading.Thread(target=run_job, args=(job_id, target_url, session, roll_list))
     t.start()
 
@@ -262,13 +304,6 @@ def download(job_id):
         return jsonify({"error": "not ready"}), 400
         
     return send_file(job["zip_path"], as_attachment=True, download_name=f"results_{job_id}.zip")
-
-# ---------------------------------------------------------
-# 6. Health Check / Root Route
-# ---------------------------------------------------------
-@app.route("/", methods=["GET"])
-def health():
-    return jsonify({"status": "ok", "message": "Universal BISE Result Downloader backend is running"})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
