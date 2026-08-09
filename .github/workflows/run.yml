@@ -6,22 +6,28 @@ on:
       target_url:
         description: 'Board Result URL'
         required: true
-        default: 'https://www.bisefgd.edu.pk/result'
+        default: ''
         type: string
       session:
-        description: 'Session / Exam (e.g. Annual 2026)'
-        required: false
-        default: 'Annual 2026'
-        type: string
+        description: 'Select Session / Exam'
+        required: true
+        type: choice
+        options:
+          - 'None (No session required)'
+          - 'Annual 2026'
+          - 'Supplementary 2026'
+          - 'Annual 2025'
+          - 'Supplementary 2025'
+          - 'Annual 2024'
       start_roll:
         description: 'Start Roll Number'
         required: true
-        default: '100001'
+        default: ''
         type: string
       end_roll:
         description: 'End Roll Number'
         required: true
-        default: '100005'
+        default: ''
         type: string
 
 jobs:
@@ -58,3 +64,4 @@ jobs:
       with:
         name: downloaded-results
         path: /tmp/bise_results/
+        
