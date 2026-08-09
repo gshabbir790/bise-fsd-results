@@ -13,12 +13,13 @@ def download_and_convert_results():
     if session_val == 'None':
         session_val = ""
 
+    # یہاں ہم نے فکس کر دیا ہے کہ اگر گٹ ہب سے ویلیو نہ آئے تو کم از کم 472014 سے 472020 تک چلے
     try:
-        start_roll = int(os.environ.get("START_ROLL", "100001"))
-        end_roll = int(os.environ.get("END_ROLL", "100005"))
+        start_roll = int(os.environ.get("START_ROLL", "472014"))
+        end_roll = int(os.environ.get("END_ROLL", "472020"))
     except ValueError:
-        logging.error("Roll numbers must be valid numbers.")
-        return
+        start_roll = 472014
+        end_roll = 472020
 
     roll_list = list(range(start_roll, end_roll + 1))
     
@@ -27,7 +28,7 @@ def download_and_convert_results():
 
     successful_pdfs = []
 
-    logging.info(f"Starting optimized Playwright download for {len(roll_list)} roll numbers...")
+    logging.info(f"Starting optimized Playwright download for {len(roll_list)} roll numbers (from {start_roll} to {end_roll})...")
 
     try:
         with sync_playwright() as p:
@@ -38,13 +39,11 @@ def download_and_convert_results():
             context = browser.new_context()
             page = context.new_page()
 
-            # فالتو تصاویر اور فونٹس بلاک کرنا تاکہ سپیڈ تیز ہو
+            # سپیڈ تیز کرنے کے لیے تصاویر بلاک کرنا
             page.route("**/*.{png,jpg,jpeg,svg,gif,woff,woff2}", lambda route: route.abort())
 
-            # ویب سائٹ کو صرف ایک بار کھولیں
             page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
 
-            # اگر سیشن موجود ہو تو اسے سلیکٹ کر لیں
             if session_val:
                 for select in page.query_selector_all("select"):
                     try:
@@ -59,7 +58,6 @@ def download_and_convert_results():
 
             for roll_no in roll_list:
                 try:
-                    # اگر پاپ اپ یا موڈل کھلا ہے تو اسے ہٹانے یا کلک کرنے کی کوشش کریں
                     try:
                         close_btn = page.query_selector(".modal .close, button.close, [data-dismiss='modal']")
                         if close_btn:
@@ -67,7 +65,6 @@ def download_and_convert_results():
                     except:
                         pass
 
-                    # رول نمبر ان پٹ فیلڈ تلاش کریں
                     roll_input = (
                         page.query_selector("input[id*='roll']") or
                         page.query_selector("input[name*='roll']") or
@@ -77,11 +74,9 @@ def download_and_convert_results():
                     if roll_input is None:
                         raise Exception("Roll number input field not found")
 
-                    # پرانا نمبر مٹا کر نیا رول نمبر لکھیں
                     roll_input.fill("")
                     roll_input.fill(str(roll_no))
 
-                    # سرچ بٹن پر فورس کلک (force=True سے موڈل کا مسئلہ ختم ہو جائے گا)
                     button_selectors = [
                         "input[type='submit']", "button[type='submit']",
                         "text=Search", "text=Get Result", "text=Submit", "text=View Result"
@@ -91,7 +86,6 @@ def download_and_convert_results():
                     for selector in button_selectors:
                         loc = page.locator(selector)
                         if loc.count() > 0:
-                            # force=True استعمال کیا تاکہ رکاوٹ کے باوجود کلک ہو جائے
                             loc.first.click(force=True)
                             clicked = True
                             break
@@ -99,7 +93,6 @@ def download_and_convert_results():
                     if not clicked:
                         page.evaluate("if(typeof __doPostBack == 'function') { __doPostBack(); }")
 
-                    # رزلٹ لوڈ ہونے کا انتظار کریں
                     page.wait_for_load_state("domcontentloaded", timeout=10000)
                     
                     pdf_path = os.path.join(pdf_dir, f"{roll_no}.pdf")
@@ -108,10 +101,8 @@ def download_and_convert_results():
                     
                     logging.info(f"Successfully generated PDF for Roll No {roll_no}")
 
-                    # واپس مین پیج پر جانے کے لیے
                     if page.url != target_url:
                         page.goto(target_url, wait_until="domcontentloaded", timeout=15000)
-                        # سیشن دوبارہ سلیکٹ کریں کیونکہ پیج ریفریش ہوا ہے
                         if session_val:
                             for select in page.query_selector_all("select"):
                                 try:
@@ -133,7 +124,6 @@ def download_and_convert_results():
 
             browser.close()
 
-        # پی ڈی ایف مرج کرنے کا عمل
         if "Yes" in merge_choice and successful_pdfs:
             logging.info("Merging all PDFs into a single master file...")
             merger = PdfWriter()
@@ -157,3 +147,4 @@ def download_and_convert_results():
 
 if __name__ == "__main__":
     download_and_convert_results()
+        
