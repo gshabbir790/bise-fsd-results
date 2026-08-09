@@ -1,6 +1,6 @@
 import os
 os.system("playwright install chromium")
-import os
+os.system("playwright install-deps chromium")
 import streamlit as st
 from playwright.sync_api import sync_playwright
 from pypdf import PdfWriter
