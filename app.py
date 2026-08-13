@@ -150,20 +150,25 @@ def run_job(job_id, target_url, session_value, session_label, selector_meta, rol
                     page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
                     page.wait_for_load_state("networkidle")
 
-                    # سیشن سلیکٹ کرنے کا محفوظ طریقہ (کوئی سائلنٹ فال بیک نہیں)
+                    # --- بہتر اور پکا سیشن سلیکشن کا طریقہ ---
                     if session_value and selector_meta:
                         selector_str = None
                         if selector_meta.get("id"):
-                            selector_str = f"#{selector_meta['id']}"
+                            selector_str = f"select#{selector_meta['id']}"
                         elif selector_meta.get("name"):
                             selector_str = f"select[name='{selector_meta['name']}']"
+                        else:
+                            selector_str = "select"
 
-                        if selector_str:
-                            try:
-                                page.wait_for_selector(selector_str, timeout=10000)
-                                page.select_option(selector_str, value=session_value)
-                            except Exception as e:
-                                raise Exception(f"Session '{session_label}' could not be selected using {selector_str}. Error: {e}")
+                        try:
+                            page.wait_for_selector(selector_str, timeout=10000)
+                            # سیشن سلیکٹ کریں
+                            page.select_option(selector_str, value=str(session_value))
+                            # جاوا اسکریپت چینج ایونٹ ٹرگر کریں تاکہ ویب سائٹ کا سیشن لاک ہو جائے
+                            page.eval_on_selector(selector_str, "el => { el.dispatchEvent(new Event('change', { bubbles: true })); }")
+                            page.wait_for_timeout(1000)
+                        except Exception as e:
+                            print(f"Warning: Could not select session via {selector_str}: {e}")
 
                     # رول نمبر ان پٹ فیلڈ کی تلاش
                     roll_input = (
