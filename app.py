@@ -51,6 +51,7 @@ def check_website():
 
         sessions_list = []
         session_selector = None
+        debug_selects = []
 
         with sync_playwright() as p:
             browser = p.chromium.launch(
@@ -64,37 +65,46 @@ def check_website():
             )
 
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_load_state("networkidle")
+            # Some board sites keep an analytics/ad request open indefinitely,
+            # so "networkidle" can time out even though the page has already
+            # fully rendered. Don't let that abort the whole check.
+            try:
+                page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception:
+                print("networkidle wait timed out — continuing anyway")
             page.wait_for_timeout(3000)
 
             keywords = ["session", "exam", "year", "sess"]
 
             def extract_from_context(context_page):
                 nonlocal session_selector
-                extracted = []
+                found_here = []
                 try:
                     selects = context_page.query_selector_all('select')
                     for select in selects:
                         name = (select.get_attribute('name') or '').lower()
                         sid = (select.get_attribute('id') or '').lower()
-                        
+                        debug_selects.append({"name": name, "id": sid})
+
                         if any(k in name or k in sid for k in keywords):
                             options = select.query_selector_all('option')
+                            extracted = []
                             for opt in options:
                                 text = opt.inner_text().strip()
                                 val = opt.get_attribute('value') or text
                                 if text and not any(k in text.lower() for k in ['select', 'choose', 'پوچھیں', '--']):
                                     extracted.append({'label': text, 'value': val})
-                            
+
                             if extracted and not session_selector:
                                 session_selector = {
                                     "tag": "select",
                                     "id": select.get_attribute('id'),
                                     "name": select.get_attribute('name')
                                 }
-                except Exception:
-                    pass
-                return extracted
+                                found_here = extracted
+                except Exception as ex:
+                    print("extract_from_context error:", ex)
+                return found_here
 
             # مین پیج سے چیک کریں
             sessions_list = extract_from_context(page)
@@ -106,16 +116,20 @@ def check_website():
                     if sessions_list:
                         break
 
+            print("Selects seen on page:", debug_selects)
             print("Extracted Sessions:", sessions_list)
             print("Session Selector:", session_selector)
             print("========== CHECK END ==========\n")
+
+            browser.close()
 
         return jsonify({
             "success": True,
             "has_session": len(sessions_list) > 0,
             "sessions": sessions_list,
             "session_selector": session_selector,
-            "url": url
+            "url": url,
+            "debug_selects_found": debug_selects
         })
 
     except Exception as e:
@@ -142,150 +156,152 @@ def run_job(job_id, target_url, session_value, session_label, selector_meta, rol
                 headless=True, 
                 args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
             )
-            context = browser.new_context()
+            try:
+                context = browser.new_context()
 
-            for roll_no in roll_list:
-                page = context.new_page()
-                try:
-                    page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
-                    page.wait_for_load_state("networkidle")
+                for roll_no in roll_list:
+                    page = context.new_page()
+                    try:
+                        page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+                        page.wait_for_load_state("networkidle")
 
-                    # --- بہتر اور پکا سیشن سلیکشن کا طریقہ ---
-                    if session_value and selector_meta:
-                        selector_str = None
-                        if selector_meta.get("id"):
-                            selector_str = f"select#{selector_meta['id']}"
-                        elif selector_meta.get("name"):
-                            selector_str = f"select[name='{selector_meta['name']}']"
-                        else:
-                            selector_str = "select"
+                        # --- بہتر اور پکا سیشن سلیکشن کا طریقہ ---
+                        if session_value and selector_meta:
+                            selector_str = None
+                            if selector_meta.get("id"):
+                                selector_str = f"select#{selector_meta['id']}"
+                            elif selector_meta.get("name"):
+                                selector_str = f"select[name='{selector_meta['name']}']"
+                            else:
+                                selector_str = "select"
 
-                        try:
-                            page.wait_for_selector(selector_str, timeout=10000)
-                            # سیشن سلیکٹ کریں
-                            page.select_option(selector_str, value=str(session_value))
-                            # جاوا اسکریپت چینج ایونٹ ٹرگر کریں تاکہ ویب سائٹ کا سیشن لاک ہو جائے
-                            page.eval_on_selector(selector_str, "el => { el.dispatchEvent(new Event('change', { bubbles: true })); }")
-                            page.wait_for_timeout(1000)
-                        except Exception as e:
-                            print(f"Warning: Could not select session via {selector_str}: {e}")
+                            try:
+                                page.wait_for_selector(selector_str, timeout=10000)
+                                # سیشن سلیکٹ کریں
+                                page.select_option(selector_str, value=str(session_value))
+                                # جاوا اسکریپت چینج ایونٹ ٹرگر کریں تاکہ ویب سائٹ کا سیشن لاک ہو جائے
+                                page.eval_on_selector(selector_str, "el => { el.dispatchEvent(new Event('change', { bubbles: true })); }")
+                                page.wait_for_timeout(1000)
+                            except Exception as e:
+                                print(f"Warning: Could not select session via {selector_str}: {e}")
 
-                    # رول نمبر ان پٹ فیلڈ کی تلاش
-                    roll_input = (
-                        page.query_selector("input[type='text']") or 
-                        page.query_selector("input[name*='roll']") or 
-                        page.query_selector("input[id*='roll']")
-                    )
+                        # رول نمبر ان پٹ فیلڈ کی تلاش
+                        roll_input = (
+                            page.query_selector("input[type='text']") or 
+                            page.query_selector("input[name*='roll']") or 
+                            page.query_selector("input[id*='roll']")
+                        )
 
-                    if roll_input is None:
-                        for inp in page.query_selector_all("input"):
-                            itype = (inp.get_attribute("type") or "").lower()
-                            if itype in ["", "text", "number"]:
-                                roll_input = inp
+                        if roll_input is None:
+                            for inp in page.query_selector_all("input"):
+                                itype = (inp.get_attribute("type") or "").lower()
+                                if itype in ["", "text", "number"]:
+                                    roll_input = inp
+                                    break
+
+                        if roll_input is None:
+                            raise Exception("Roll No input field not found")
+
+                        roll_input.fill(str(roll_no))
+
+                        # سبمٹ بٹن پر کلک کرنا
+                        clicked = False
+                        button_selectors = [
+                            "text=Get Result", "text=Search", "text=Submit",
+                            "text=View Result", "text=Show Result", "text=Find Result",
+                            "text=Search Result", "button[type='submit']", "input[type='submit']"
+                        ]
+
+                        for selector in button_selectors:
+                            loc = page.locator(selector)
+                            if loc.count() > 0:
+                                loc.first.click()
+                                clicked = True
                                 break
 
-                    if roll_input is None:
-                        raise Exception("Roll No input field not found")
+                        if not clicked:
+                            btn = page.query_selector("button") or page.query_selector("input[type='button']")
+                            if btn:
+                                btn.click()
+                            else:
+                                raise Exception("Submit button not found")
 
-                    roll_input.fill(str(roll_no))
+                        page.wait_for_load_state("networkidle", timeout=30000)
+                        page.wait_for_timeout(1500)
 
-                    # سبمٹ بٹن پر کلک کرنا
-                    clicked = False
-                    button_selectors = [
-                        "text=Get Result", "text=Search", "text=Submit",
-                        "text=View Result", "text=Show Result", "text=Find Result",
-                        "text=Search Result", "button[type='submit']", "input[type='submit']"
-                    ]
+                        # --- PDF Validity Check (نیا فیچر) ---
+                        page_text = page.locator("body").inner_text().lower()
+                        error_keywords = [
+                            "record not found", 
+                            "invalid roll number", 
+                            "server error", 
+                            "captcha",
+                            "not found"
+                        ]
 
-                    for selector in button_selectors:
-                        loc = page.locator(selector)
-                        if loc.count() > 0:
-                            loc.first.click()
-                            clicked = True
-                            break
+                        is_valid = True
+                        for err in error_keywords:
+                            if err in page_text:
+                                is_valid = False
+                                job["failed"].append({"roll_no": roll_no, "error": f"Page validation failed: {err.upper()}"})
+                                break
 
-                    if not clicked:
-                        btn = page.query_selector("button") or page.query_selector("input[type='button']")
-                        if btn:
-                            btn.click()
-                        else:
-                            raise Exception("Submit button not found")
+                        if is_valid:
+                            pdf_path = os.path.join(out_dir, f"{roll_no}.pdf")
+                            page.pdf(path=pdf_path, format="A4", print_background=True)
+                            job["done"] += 1
 
-                    page.wait_for_load_state("networkidle", timeout=30000)
-                    page.wait_for_timeout(1500)
+                    except Exception as e:
+                        job["failed"].append({"roll_no": roll_no, "error": str(e)})
+                    finally:
+                        page.close()
+                        job["processed"] += 1
 
-                    # --- PDF Validity Check (نیا فیچر) ---
-                    page_text = page.locator("body").inner_text().lower()
-                    error_keywords = [
-                        "record not found", 
-                        "invalid roll number", 
-                        "server error", 
-                        "captcha",
-                        "not found"
-                    ]
-                    
-                    is_valid = True
-                    for err in error_keywords:
-                        if err in page_text:
-                            is_valid = False
-                            job["failed"].append({"roll_no": roll_no, "error": f"Page validation failed: {err.upper()}"})
-                            break
+                pdf_files = []
+                for fname in os.listdir(out_dir):
+                    if fname.lower().endswith(".pdf"):
+                        pdf_files.append(fname)
 
-                    if is_valid:
-                        pdf_path = os.path.join(out_dir, f"{roll_no}.pdf")
-                        page.pdf(path=pdf_path, format="A4", print_background=True)
-                        job["done"] += 1
+                pdf_files.sort(key=lambda x: int(os.path.splitext(x)[0]))
 
-                except Exception as e:
-                    job["failed"].append({"roll_no": roll_no, "error": str(e)})
-                finally:
-                    page.close()
-                    job["processed"] += 1
+                if not pdf_files:
+                    raise Exception("کوئی valid PDF تیار نہیں ہوئی")
 
-            pdf_files = []
-            for fname in os.listdir(out_dir):
-                if fname.lower().endswith(".pdf"):
-                    pdf_files.append(fname)
+                merged_path = os.path.join(JOBS_DIR, f"results_{job_id}.pdf")
 
-            pdf_files.sort(key=lambda x: int(os.path.splitext(x)[0]))
+                writer = PdfWriter()
+                for fname in pdf_files:
+                    pdf_path = os.path.join(out_dir, fname)
+                    reader = PdfReader(pdf_path)
+                    for page in reader.pages:
+                        writer.add_page(page)
 
-            if not pdf_files:
-                raise Exception("کوئی valid PDF تیار نہیں ہوئی")
+                # --- Compression (سائز کم کرنے کے لیے) ---
+                for wpage in writer.pages:
+                    try:
+                        wpage.compress_content_streams(level=6)
+                    except Exception:
+                        pass
+                    # امیجز کا کوالٹی کم کر کے سائز مزید کم کریں (اگر pypdf ورژن سپورٹ کرے)
+                    try:
+                        for img in wpage.images:
+                            img.replace(img.image, quality=45)
+                    except Exception:
+                        pass
 
-            merged_path = os.path.join(JOBS_DIR, f"results_{job_id}.pdf")
+                with open(merged_path, "wb") as output:
+                    writer.write(output)
 
-            writer = PdfWriter()
-            for fname in pdf_files:
-                pdf_path = os.path.join(out_dir, fname)
-                reader = PdfReader(pdf_path)
-                for page in reader.pages:
-                    writer.add_page(page)
+                writer.close()
 
-            # --- Compression (سائز کم کرنے کے لیے) ---
-            for wpage in writer.pages:
-                try:
-                    wpage.compress_content_streams(level=6)
-                except Exception:
-                    pass
-                # امیجز کا کوالٹی کم کر کے سائز مزید کم کریں (اگر pypdf ورژن سپورٹ کرے)
-                try:
-                    for img in wpage.images:
-                        img.replace(img.image, quality=45)
-                except Exception:
-                    pass
+                merged_size_bytes = os.path.getsize(merged_path)
 
-            with open(merged_path, "wb") as output:
-                writer.write(output)
-
-            writer.close()
-
-            merged_size_bytes = os.path.getsize(merged_path)
-
-            job["merged_path"] = merged_path
-            job["merged_size_bytes"] = merged_size_bytes
-            job["merged_size_mb"] = round(merged_size_bytes / (1024 * 1024), 2)
-            job["status"] = "done"
-            browser.close()
+                job["merged_path"] = merged_path
+                job["merged_size_bytes"] = merged_size_bytes
+                job["merged_size_mb"] = round(merged_size_bytes / (1024 * 1024), 2)
+                job["status"] = "done"
+            finally:
+                browser.close()
 
     except Exception as e:
         job["status"] = "error"
