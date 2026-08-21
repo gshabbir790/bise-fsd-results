@@ -35,17 +35,22 @@ def index():
 @app.route("/api/check", methods=["GET", "POST"])
 def check_website():
     if request.method == "GET":
-        return jsonify({
-            "message": "API is working. Use POST with JSON: {'url': '...'}"
-        })
-
-    try:
+        # موبائل سے آسانی سے ٹیسٹ کرنے کے لیے: براؤزر میں یہ لنک کھول کر بھی
+        # نتیجہ دیکھا جا سکتا ہے، DevTools کی ضرورت نہیں —
+        # /api/check?url=https://example.com/Result.aspx
+        url = request.args.get("url")
+        if not url:
+            return jsonify({
+                "message": "API is working. Use POST with JSON: {'url': '...'} or GET ?url=..."
+            })
+    else:
         data = request.get_json(silent=True) or {}
         url = data.get("url")
 
         if not url:
             return jsonify({"error": "url is required"}), 400
 
+    try:
         print("\n========== CHECK START ==========")
         print("Target URL:", url)
 
@@ -320,7 +325,7 @@ def start_job():
     
     custom_rolls_raw = data.get("custom_rolls", [])
     start_roll = data.get("start_roll", 0)
-    end_roll = data.get("end_roll", 0) 
+    end_roll = data.get("end_roll", 0)
 
     roll_list = []
 
