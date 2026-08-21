@@ -320,7 +320,7 @@ def start_job():
     
     custom_rolls_raw = data.get("custom_rolls", [])
     start_roll = data.get("start_roll", 0)
-    end_roll = data.get("end_roll", 0)
+    end_roll = data.get("end_roll", 0) 
 
     roll_list = []
 
